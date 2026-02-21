@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -27,6 +28,7 @@ func main() {
 		if err != nil {
 			continue
 		}
-		fmt.Printf("Получен пакет метрик: %s\n", string(buf[:n]))
+		msg := strings.ReplaceAll(string(buf[:n]), "\n", " ")
+		fmt.Println(msg)
 	}
 }
