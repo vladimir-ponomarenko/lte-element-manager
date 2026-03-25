@@ -1,0 +1,23 @@
+element:
+  # Network element type managed by this EMS instance.
+  type: enb
+  # UDS path for JSON metrics emitted by the element.
+  socket_path: /var/run/enb-metrics/enb_metrics.uds
+
+bus:
+  # Internal bus buffer size.
+  buffer: 200
+
+log:
+  # Default log level for all components.
+  level: info
+  # Output format: json or console.
+  format: console
+  # Colorize levels in console format.
+  color: true
+  # RFC3339 timestamps.
+  timestamp: true
+  # Optional per-component overrides.
+  components:
+    metrics: info
+    adapter: info

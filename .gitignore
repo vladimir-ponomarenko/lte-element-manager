@@ -20,6 +20,17 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# Local build outputs
+/ems-agent
+/bin/
+/dist/
+/tmp/
+
+# Local build/cache dirs
+/.build/
+/.local/
+/third_party/
+
 # Go workspace file
 go.work
 go.work.sum
@@ -28,5 +39,9 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+.fleet/
+
+# macOS
+.DS_Store
