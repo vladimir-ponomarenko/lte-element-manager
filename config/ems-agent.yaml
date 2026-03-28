@@ -8,6 +8,12 @@ bus:
   # Internal bus buffer size.
   buffer: 200
 
+metrics:
+  # Path where the latest raw JSON metrics snapshot is stored.
+  snapshot_path: ""
+  # Log raw UDS metrics as received.
+  log_uds_metrics: false
+
 log:
   # Default log level for all components.
   level: info
@@ -21,3 +27,15 @@ log:
   components:
     metrics: info
     adapter: info
+    netconf: info
+
+netconf:
+  enabled: false
+  addr: 0.0.0.0:8300
+  transport: ssh
+  snapshot_path: ""
+  yang_dir: yang
+  ssh:
+    hostkey: ""
+    authorized_key: ""
+    username: admin

@@ -13,6 +13,7 @@ type MetricsReader struct {
 	Agent *app.Agent
 	Out   chan<- domain.MetricSample
 	Log   zerolog.Logger
+	LogUDS bool
 }
 
 func NewMetricsReader(agent *app.Agent, out chan<- domain.MetricSample, log zerolog.Logger) *MetricsReader {
@@ -28,9 +29,32 @@ func (s *MetricsReader) Name() string {
 }
 
 func (s *MetricsReader) Run(ctx context.Context) error {
-	err := s.Agent.Run(ctx, s.Out)
-	if err != nil {
-		s.Log.Error().Err(err).Msg("metrics reader error")
+	if !s.LogUDS {
+		err := s.Agent.Run(ctx, s.Out)
+		if err != nil {
+			s.Log.Error().Err(err).Msg("metrics reader error")
+		}
+		return err
 	}
-	return err
+
+	internal := make(chan domain.MetricSample, 200)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Agent.Run(ctx, internal)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-errCh:
+			if err != nil {
+				s.Log.Error().Err(err).Msg("metrics reader error")
+			}
+			return err
+		case sample := <-internal:
+			s.Log.Info().RawJSON("metrics", []byte(sample.RawJSON)).Msg("metrics uds")
+			s.Out <- sample
+		}
+	}
 }

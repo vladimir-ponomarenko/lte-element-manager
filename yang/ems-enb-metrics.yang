@@ -1,0 +1,254 @@
+module ems-enb-metrics {
+  yang-version 1.1;
+  namespace "urn:ems:enb:metrics";
+  prefix ems;
+
+  organization "LTE Element Manager";
+  contact "";
+  description
+    "YANG model for srsENB JSON metrics exposed by EMS agent.";
+
+  revision 2026-04-01 {
+    description "Initial revision.";
+  }
+
+  container enb_metrics {
+    description "Top-level ENB metrics payload.";
+
+    leaf type { type string; }
+    leaf enb_serial { type string; }
+    leaf timestamp { type decimal64 { fraction-digits 6; } }
+
+    container s1ap_container {
+      description "S1AP/NAS counters.";
+
+      leaf s1ap_status { type string; }
+      leaf s1ap_status_code { type uint32; }
+
+      leaf nas_ul_msgs { type uint64; }
+      leaf nas_ul_fail { type uint64; }
+      leaf nas_dl_msgs { type uint64; }
+      leaf nas_dl_drop { type uint64; }
+      leaf nas_ul_bytes { type uint64; }
+      leaf nas_dl_bytes { type uint64; }
+      leaf nas_ul_transport_initial_ue { type uint64; }
+      leaf nas_ul_transport_ul_nas { type uint64; }
+      leaf nas_dl_transport_dl_nas { type uint64; }
+      leaf nas_ul_sec_hdr_plain { type uint64; }
+      leaf nas_ul_sec_hdr_integrity { type uint64; }
+      leaf nas_ul_sec_hdr_integrity_ciphered { type uint64; }
+      leaf nas_ul_sec_hdr_integrity_new_ctx { type uint64; }
+      leaf nas_ul_sec_hdr_integrity_ciphered_new_ctx { type uint64; }
+      leaf nas_ul_sec_hdr_service_request { type uint64; }
+      leaf nas_ul_sec_hdr_unknown { type uint64; }
+      leaf nas_dl_sec_hdr_plain { type uint64; }
+      leaf nas_dl_sec_hdr_integrity { type uint64; }
+      leaf nas_dl_sec_hdr_integrity_ciphered { type uint64; }
+      leaf nas_dl_sec_hdr_integrity_new_ctx { type uint64; }
+      leaf nas_dl_sec_hdr_integrity_ciphered_new_ctx { type uint64; }
+      leaf nas_dl_sec_hdr_service_request { type uint64; }
+      leaf nas_dl_sec_hdr_unknown { type uint64; }
+      leaf nas_ul_pd_emm { type uint64; }
+      leaf nas_ul_pd_esm { type uint64; }
+      leaf nas_ul_pd_other { type uint64; }
+      leaf nas_dl_pd_emm { type uint64; }
+      leaf nas_dl_pd_esm { type uint64; }
+      leaf nas_dl_pd_other { type uint64; }
+      leaf nas_ul_pd_last { type uint64; }
+      leaf nas_dl_pd_last { type uint64; }
+      leaf nas_ul_short_pdu { type uint64; }
+      leaf nas_dl_short_pdu { type uint64; }
+      leaf nas_ul_parse_fail { type uint64; }
+      leaf nas_dl_parse_fail { type uint64; }
+      leaf nas_ul_attach { type uint64; }
+      leaf nas_dl_attach { type uint64; }
+      leaf nas_ul_tau { type uint64; }
+      leaf nas_dl_tau { type uint64; }
+      leaf nas_ul_service_request { type uint64; }
+      leaf nas_dl_service_request { type uint64; }
+      leaf nas_dl_service_reject { type uint64; }
+      leaf nas_ul_identity { type uint64; }
+      leaf nas_dl_identity { type uint64; }
+      leaf nas_ul_authentication { type uint64; }
+      leaf nas_dl_authentication { type uint64; }
+      leaf nas_ul_security_mode { type uint64; }
+      leaf nas_dl_security_mode { type uint64; }
+      leaf nas_ul_detach { type uint64; }
+      leaf nas_dl_detach { type uint64; }
+      leaf nas_ul_emm_status { type uint64; }
+      leaf nas_dl_emm_status { type uint64; }
+      leaf nas_ul_esm_information { type uint64; }
+      leaf nas_dl_esm_information { type uint64; }
+      leaf nas_ul_pdn_connectivity { type uint64; }
+      leaf nas_dl_pdn_connectivity { type uint64; }
+      leaf nas_ul_pdn_disconnect { type uint64; }
+      leaf nas_dl_pdn_disconnect { type uint64; }
+      leaf nas_ul_default_bearer { type uint64; }
+      leaf nas_dl_default_bearer { type uint64; }
+      leaf nas_ul_dedicated_bearer { type uint64; }
+      leaf nas_dl_dedicated_bearer { type uint64; }
+      leaf nas_ul_modify_bearer { type uint64; }
+      leaf nas_dl_modify_bearer { type uint64; }
+      leaf nas_ul_deactivate_bearer { type uint64; }
+      leaf nas_dl_deactivate_bearer { type uint64; }
+      leaf nas_ul_bearer_resource { type uint64; }
+      leaf nas_dl_bearer_resource { type uint64; }
+      leaf nas_ul_generic_transport { type uint64; }
+      leaf nas_dl_generic_transport { type uint64; }
+      leaf nas_dl_cs_service_notification { type uint64; }
+      leaf nas_ul_other { type uint64; }
+      leaf nas_dl_other { type uint64; }
+      leaf nas_ul_unknown { type uint64; }
+      leaf nas_dl_unknown { type uint64; }
+    }
+
+    container rrc_container {
+      description "RRC counters.";
+
+      leaf rrc_total_ues { type uint32; }
+      leaf rrc_connected_ues { type uint32; }
+      leaf rrc_con_req_rx { type uint32; }
+      leaf rrc_con_setup_tx { type uint32; }
+      leaf rrc_con_setup_complete_rx { type uint32; }
+      leaf rrc_con_reject_tx { type uint32; }
+      leaf rrc_con_reest_req_rx { type uint32; }
+      leaf rrc_con_reest_tx { type uint32; }
+      leaf rrc_con_reest_complete_rx { type uint32; }
+      leaf rrc_con_reest_reject_tx { type uint32; }
+      leaf rrc_con_reconf_tx { type uint32; }
+      leaf rrc_con_reconf_complete_rx { type uint32; }
+      leaf rrc_con_release_tx { type uint32; }
+      leaf rrc_security_mode_command_tx { type uint32; }
+      leaf rrc_security_mode_complete_rx { type uint32; }
+      leaf rrc_security_mode_failure_rx { type uint32; }
+      leaf rrc_ue_cap_enquiry_tx { type uint32; }
+      leaf rrc_ue_cap_info_rx { type uint32; }
+      leaf rrc_ue_info_req_tx { type uint32; }
+      leaf rrc_ue_info_resp_rx { type uint32; }
+      leaf rrc_max_rlc_retx { type uint32; }
+      leaf rrc_protocol_fail { type uint32; }
+      leaf rrc_paging_requests_total { type uint32; }
+      leaf rrc_paging_imsi { type uint32; }
+      leaf rrc_paging_tmsi { type uint32; }
+      leaf rrc_paging_add_fail { type uint32; }
+      leaf rrc_paging_pdu_tx { type uint32; }
+      leaf rrc_paging_bytes_tx { type uint32; }
+      leaf rrc_paging_identities_tx { type uint32; }
+      leaf rrc_pdcp_integrity_errors { type uint32; }
+      leaf rrc_state_idle { type uint32; }
+      leaf rrc_state_wait_for_con_setup_complete { type uint32; }
+      leaf rrc_state_wait_for_con_reest_complete { type uint32; }
+      leaf rrc_state_wait_for_security_mode_complete { type uint32; }
+      leaf rrc_state_wait_for_ue_cap_info { type uint32; }
+      leaf rrc_state_wait_for_ue_cap_info_endc { type uint32; }
+      leaf rrc_state_wait_for_con_reconf_complete { type uint32; }
+      leaf rrc_state_reestablishment_complete { type uint32; }
+      leaf rrc_state_registered { type uint32; }
+      leaf rrc_state_release_request { type uint32; }
+    }
+
+    list cell_list {
+      key "carrier_id pci";
+      leaf carrier_id { type uint32; }
+      leaf pci { type uint32; }
+      container cell_container {
+        leaf carrier_id { type uint32; }
+        leaf pci { type uint32; }
+        leaf nof_rach { type uint32; }
+
+        list ue_list {
+          key "ue_rnti";
+          leaf ue_rnti { type uint32; }
+          container ue_container {
+            leaf ue_rnti { type uint32; }
+            leaf dl_cqi { type decimal64 { fraction-digits 6; } }
+            leaf dl_mcs { type decimal64 { fraction-digits 6; } }
+            leaf ul_pusch_rssi { type decimal64 { fraction-digits 6; } }
+            leaf ul_pucch_rssi { type decimal64 { fraction-digits 6; } }
+            leaf ul_pucch_ni { type decimal64 { fraction-digits 6; } }
+            leaf ul_pusch_tpc { type int64; }
+            leaf ul_pucch_tpc { type int64; }
+            leaf dl_cqi_offset { type decimal64 { fraction-digits 6; } }
+            leaf ul_snr_offset { type decimal64 { fraction-digits 6; } }
+            leaf dl_bitrate { type decimal64 { fraction-digits 6; } }
+            leaf dl_bler { type decimal64 { fraction-digits 6; } }
+            leaf ul_snr { type decimal64 { fraction-digits 6; } }
+            leaf ul_mcs { type decimal64 { fraction-digits 6; } }
+            leaf ul_bitrate { type decimal64 { fraction-digits 6; } }
+            leaf ul_bler { type decimal64 { fraction-digits 6; } }
+            leaf ul_phr { type decimal64 { fraction-digits 6; } }
+            leaf ul_bsr { type uint32; }
+            leaf rrc_state_str { type string; }
+            leaf rrc_state { type uint32; }
+            leaf rrc_drb_count { type uint32; }
+            leaf rrc_nof_cells { type uint32; }
+            leaf rrc_is_allocated { type uint32; }
+            leaf rrc_sr_res_present { type uint32; }
+            leaf rrc_n_pucch_cs_present { type uint32; }
+            leaf rrc_is_csfb { type uint32; }
+            leaf rrc_connect_notified { type uint32; }
+            leaf rrc_rlf_cnt { type uint32; }
+            leaf rrc_rlf_info_pending { type uint32; }
+            leaf rrc_consecutive_kos_dl { type uint32; }
+            leaf rrc_consecutive_kos_ul { type uint32; }
+            leaf rrc_has_tmsi { type uint32; }
+            leaf rrc_m_tmsi { type uint32; }
+            leaf rrc_mmec { type uint32; }
+            leaf rrc_establishment_cause { type uint32; }
+            leaf rrc_transaction_id { type uint32; }
+            leaf rrc_activity_timer_running { type uint32; }
+            leaf rrc_activity_timer_elapsed { type uint32; }
+            leaf rrc_activity_timer_duration { type uint32; }
+            leaf rrc_phy_dl_rlf_timer_running { type uint32; }
+            leaf rrc_phy_dl_rlf_timer_elapsed { type uint32; }
+            leaf rrc_phy_dl_rlf_timer_duration { type uint32; }
+            leaf rrc_phy_ul_rlf_timer_running { type uint32; }
+            leaf rrc_phy_ul_rlf_timer_elapsed { type uint32; }
+            leaf rrc_phy_ul_rlf_timer_duration { type uint32; }
+            leaf rrc_rlc_rlf_timer_running { type uint32; }
+            leaf rrc_rlc_rlf_timer_elapsed { type uint32; }
+            leaf rrc_rlc_rlf_timer_duration { type uint32; }
+            leaf rrc_last_ul_msg_bytes { type uint32; }
+            leaf rrc_eutra_capabilities_unpacked { type uint32; }
+            leaf rrc_release_cause { type string; }
+            leaf rrc_con_req_rx { type uint32; }
+            leaf rrc_con_setup_tx { type uint32; }
+            leaf rrc_con_setup_complete_rx { type uint32; }
+            leaf rrc_con_reject_tx { type uint32; }
+            leaf rrc_con_reest_req_rx { type uint32; }
+            leaf rrc_con_reest_tx { type uint32; }
+            leaf rrc_con_reest_complete_rx { type uint32; }
+            leaf rrc_con_reest_reject_tx { type uint32; }
+            leaf rrc_con_reconf_tx { type uint32; }
+            leaf rrc_con_reconf_complete_rx { type uint32; }
+            leaf rrc_con_release_tx { type uint32; }
+            leaf rrc_security_mode_command_tx { type uint32; }
+            leaf rrc_security_mode_complete_rx { type uint32; }
+            leaf rrc_security_mode_failure_rx { type uint32; }
+            leaf rrc_ue_cap_enquiry_tx { type uint32; }
+            leaf rrc_ue_cap_info_rx { type uint32; }
+            leaf rrc_ue_info_req_tx { type uint32; }
+            leaf rrc_ue_info_resp_rx { type uint32; }
+            leaf rrc_max_rlc_retx { type uint32; }
+            leaf rrc_protocol_fail { type uint32; }
+
+            list bearer_list {
+              key "bearer_id";
+              leaf bearer_id { type uint32; }
+              container bearer_container {
+                leaf bearer_id { type uint32; }
+                leaf qci { type uint32; }
+                leaf dl_total_bytes { type uint64; }
+                leaf ul_total_bytes { type uint64; }
+                leaf dl_latency { type decimal64 { fraction-digits 6; } }
+                leaf ul_latency { type decimal64 { fraction-digits 6; } }
+                leaf dl_buffered_bytes { type uint32; }
+                leaf ul_buffered_bytes { type uint32; }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

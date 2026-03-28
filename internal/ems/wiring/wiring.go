@@ -2,6 +2,7 @@ package wiring
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/rs/zerolog"
 
@@ -12,6 +13,7 @@ import (
 	"lte-element-manager/internal/ems/domain"
 	"lte-element-manager/internal/ems/fcaps/metrics"
 	"lte-element-manager/internal/ems/logging"
+	"lte-element-manager/internal/ems/netconf"
 	"lte-element-manager/internal/ems/service"
 	"lte-element-manager/internal/ems/services"
 )
@@ -32,9 +34,11 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 
 	logMetrics := logging.WithComponent(c.log, c.cfg.Log, "metrics")
 	logAdapter := logging.WithComponent(c.log, c.cfg.Log, "adapter")
+	logNetconf := logging.WithComponent(c.log, c.cfg.Log, "netconf")
 
 	b := bus.New(c.cfg.Bus.Buffer)
 	metricsOut := make(chan domain.MetricSample, 200)
+	metricsStore := metrics.NewStore()
 
 	metricsSource, err := srsran.NewMetricsSource(domain.ElementType(c.cfg.Element.Type), c.cfg.Element.SocketPath)
 	if err != nil {
@@ -44,9 +48,40 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	parser := metrics.ParserFor(domain.ElementType(c.cfg.Element.Type))
 
 	runner := service.NewRunner(c.log)
-	runner.Add(services.NewMetricsReader(agent, metricsOut, logAdapter))
+	reader := services.NewMetricsReader(agent, metricsOut, logAdapter)
+	reader.LogUDS = c.cfg.Metrics.LogUDS
+	runner.Add(reader)
 	runner.Add(services.NewMetricsConsumer(metricsOut, b, parser, logMetrics))
-	runner.Add(services.NewMetricsLogger(b, logMetrics))
+	snapshotPath := c.cfg.Netconf.SnapshotPath
+	if snapshotPath == "" {
+		snapshotPath = c.cfg.Metrics.SnapshotPath
+	}
+	runner.Add(services.NewMetricsCache(b, metricsStore, snapshotPath, logMetrics))
+
+	if c.cfg.Netconf.Enabled {
+		if c.cfg.Netconf.Transport == "ssh" {
+			if c.cfg.Netconf.SSH.HostKey == "" || c.cfg.Netconf.SSH.AuthorizedKey == "" || c.cfg.Netconf.SSH.Username == "" {
+				return nil, fmt.Errorf("netconf ssh config is incomplete")
+			}
+			if c.cfg.Netconf.SnapshotPath == "" {
+				return nil, fmt.Errorf("netconf snapshot_path is empty")
+			}
+			server := &netconf.ProcessServer{
+				Binary:        "/app/netconf-server",
+				Addr:          c.cfg.Netconf.Addr,
+				YangDir:       c.cfg.Netconf.YangDir,
+				SnapshotPath:  c.cfg.Netconf.SnapshotPath,
+				HostKey:       c.cfg.Netconf.SSH.HostKey,
+				AuthorizedKey: c.cfg.Netconf.SSH.AuthorizedKey,
+				Username:      c.cfg.Netconf.SSH.Username,
+				Log:           logNetconf,
+			}
+			runner.Add(services.NewNetconfServer(server, logNetconf))
+		} else {
+			server := netconf.NewServer(c.cfg.Netconf.Addr, metricsStore, logNetconf)
+			runner.Add(services.NewNetconfServer(server, logNetconf))
+		}
+	}
 
 	return runner, nil
 }

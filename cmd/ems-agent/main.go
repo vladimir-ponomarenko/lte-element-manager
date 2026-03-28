@@ -43,6 +43,8 @@ func main() {
 		Str("socket_path", cfg.Element.SocketPath).
 		Str("log_format", cfg.Log.Format).
 		Bool("log_color", cfg.Log.Color).
+		Bool("netconf_enabled", cfg.Netconf.Enabled).
+		Str("netconf_addr", cfg.Netconf.Addr).
 		Msg("ems agent started")
 	container := wiring.New(cfg, log)
 	runner, err := container.Build(ctx)

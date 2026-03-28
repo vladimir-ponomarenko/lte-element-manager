@@ -30,7 +30,7 @@ LIBNETCONF2_CMAKE_FLAGS := \
 
 .PHONY: all bootstrap deps clone clone-libyang clone-libnetconf2 \
 	update-libyang update-libnetconf2 libyang libnetconf2 clean distclean \
-	build build-netconf run
+	build build-netconf build-netconf-server run
 
 all: libnetconf2 libyang
 
@@ -40,6 +40,10 @@ build:
 
 build-netconf: libnetconf2 libyang
 	CGO_ENABLED=1 LD_LIBRARY_PATH=$(PREFIX_DIR)/lib $(GO) build -tags netconf -o ems-agent ./cmd/ems-agent
+
+build-netconf-server: libnetconf2 libyang
+	$(CC) -O2 -o netconf-server ./cmd/netconf-server/server.c \
+		-I$(PREFIX_DIR)/include -L$(PREFIX_DIR)/lib -lnetconf2 -lyang -lssh -lssl -lcrypto -lpthread
 
 run: build
 	./ems-agent

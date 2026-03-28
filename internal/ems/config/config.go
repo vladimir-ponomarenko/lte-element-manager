@@ -14,6 +14,10 @@ type Config struct {
 	Bus BusConfig `yaml:"bus"`
 	// Log controls logging format and verbosity.
 	Log LogConfig `yaml:"log"`
+	// Metrics controls EMS metrics handling.
+	Metrics MetricsConfig `yaml:"metrics"`
+	// Netconf controls NETCONF server settings.
+	Netconf NetconfConfig `yaml:"netconf"`
 }
 
 type ElementConfig struct {
@@ -41,6 +45,37 @@ type LogConfig struct {
 	Components map[string]string `yaml:"components"`
 }
 
+type MetricsConfig struct {
+	// SnapshotPath stores the latest raw JSON metrics for NETCONF/NMS reads.
+	SnapshotPath string `yaml:"snapshot_path"`
+	// LogUDS enables raw UDS metrics logging.
+	LogUDS bool `yaml:"log_uds_metrics"`
+}
+
+type NetconfConfig struct {
+	// Enabled toggles the NETCONF server.
+	Enabled bool `yaml:"enabled"`
+	// Addr is the listen address (e.g., 0.0.0.0:8301).
+	Addr string `yaml:"addr"`
+	// Transport is a placeholder for future SSH/TLS support; currently "tcp".
+	Transport string `yaml:"transport"`
+	// SnapshotPath is the file path from which NETCONF reads the latest metrics.
+	SnapshotPath string `yaml:"snapshot_path"`
+	// YangDir is the directory containing YANG models to load.
+	YangDir string `yaml:"yang_dir"`
+	// SSH settings (used when transport is ssh).
+	SSH NetconfSSHConfig `yaml:"ssh"`
+}
+
+type NetconfSSHConfig struct {
+	// HostKey is the server private key path.
+	HostKey string `yaml:"hostkey"`
+	// AuthorizedKey is the public key path for user authentication.
+	AuthorizedKey string `yaml:"authorized_key"`
+	// Username allowed to authenticate.
+	Username string `yaml:"username"`
+}
+
 func Default() Config {
 	return Config{
 		Element: ElementConfig{
@@ -55,6 +90,22 @@ func Default() Config {
 			Format:    "json",
 			Color:     false,
 			Timestamp: true,
+		},
+		Metrics: MetricsConfig{
+			SnapshotPath: "",
+			LogUDS:        false,
+		},
+		Netconf: NetconfConfig{
+			Enabled:      false,
+			Addr:         "0.0.0.0:8300",
+			Transport:    "tcp",
+			SnapshotPath: "",
+			YangDir:      "yang",
+			SSH: NetconfSSHConfig{
+				HostKey:       "",
+				AuthorizedKey: "",
+				Username:      "admin",
+			},
 		},
 	}
 }
@@ -108,6 +159,24 @@ func applyDefaults(cfg *Config) {
 	if cfg.Log.Components == nil {
 		cfg.Log.Components = map[string]string{}
 	}
+	if cfg.Metrics.SnapshotPath == "" {
+		cfg.Metrics.SnapshotPath = def.Metrics.SnapshotPath
+	}
+	if cfg.Netconf.Addr == "" {
+		cfg.Netconf.Addr = def.Netconf.Addr
+	}
+	if cfg.Netconf.Transport == "" {
+		cfg.Netconf.Transport = def.Netconf.Transport
+	}
+	if cfg.Netconf.SnapshotPath == "" {
+		cfg.Netconf.SnapshotPath = def.Netconf.SnapshotPath
+	}
+	if cfg.Netconf.YangDir == "" {
+		cfg.Netconf.YangDir = def.Netconf.YangDir
+	}
+	if cfg.Netconf.SSH.Username == "" {
+		cfg.Netconf.SSH.Username = def.Netconf.SSH.Username
+	}
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -131,6 +200,36 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v, ok := envBool("EMS_LOG_TIMESTAMP", "LOG_TIMESTAMP"); ok {
 		cfg.Log.Timestamp = v
+	}
+	if v := envString("EMS_METRICS_SNAPSHOT_PATH", "METRICS_SNAPSHOT_PATH"); v != "" {
+		cfg.Metrics.SnapshotPath = v
+	}
+	if v, ok := envBool("EMS_METRICS_LOG_UDS", "METRICS_LOG_UDS"); ok {
+		cfg.Metrics.LogUDS = v
+	}
+	if v, ok := envBool("EMS_NETCONF_ENABLED", "NETCONF_ENABLED"); ok {
+		cfg.Netconf.Enabled = v
+	}
+	if v := envString("EMS_NETCONF_ADDR", "NETCONF_ADDR"); v != "" {
+		cfg.Netconf.Addr = v
+	}
+	if v := envString("EMS_NETCONF_TRANSPORT", "NETCONF_TRANSPORT"); v != "" {
+		cfg.Netconf.Transport = v
+	}
+	if v := envString("EMS_NETCONF_SNAPSHOT_PATH", "NETCONF_SNAPSHOT_PATH"); v != "" {
+		cfg.Netconf.SnapshotPath = v
+	}
+	if v := envString("EMS_NETCONF_YANG_DIR", "NETCONF_YANG_DIR"); v != "" {
+		cfg.Netconf.YangDir = v
+	}
+	if v := envString("EMS_NETCONF_SSH_HOSTKEY", "NETCONF_SSH_HOSTKEY"); v != "" {
+		cfg.Netconf.SSH.HostKey = v
+	}
+	if v := envString("EMS_NETCONF_SSH_AUTHORIZED_KEY", "NETCONF_SSH_AUTHORIZED_KEY"); v != "" {
+		cfg.Netconf.SSH.AuthorizedKey = v
+	}
+	if v := envString("EMS_NETCONF_SSH_USERNAME", "NETCONF_SSH_USERNAME"); v != "" {
+		cfg.Netconf.SSH.Username = v
 	}
 }
 
