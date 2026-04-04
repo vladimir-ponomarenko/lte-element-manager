@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
+	"bufio"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+
+	"github.com/rs/zerolog"
 
 	"lte-element-manager/internal/ems/config"
 	"lte-element-manager/internal/ems/logging"
@@ -24,18 +27,21 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		bootLog := zerolog.New(os.Stderr).With().Timestamp().Logger()
+		bootLog.Error().Err(err).Msg("config error")
 		os.Exit(1)
 	}
 
 	log := logging.New(cfg.Log).With().Str("element", cfg.Element.Type).Logger()
 
 	if *selfCheck {
-		fmt.Printf("netconf_enabled=%v\n", netconf.Enabled())
-		fmt.Printf("config_path=%s\n", *configPath)
-		fmt.Printf("element_type=%s\n", cfg.Element.Type)
-		fmt.Printf("socket_path=%s\n", cfg.Element.SocketPath)
-		fmt.Printf("bus_buffer=%d\n", cfg.Bus.Buffer)
+		w := bufio.NewWriter(os.Stdout)
+		_, _ = w.WriteString("netconf_enabled=" + strconv.FormatBool(netconf.Enabled()) + "\n")
+		_, _ = w.WriteString("config_path=" + *configPath + "\n")
+		_, _ = w.WriteString("element_type=" + cfg.Element.Type + "\n")
+		_, _ = w.WriteString("socket_path=" + cfg.Element.SocketPath + "\n")
+		_, _ = w.WriteString("bus_buffer=" + strconv.Itoa(cfg.Bus.Buffer) + "\n")
+		_ = w.Flush()
 		return
 	}
 

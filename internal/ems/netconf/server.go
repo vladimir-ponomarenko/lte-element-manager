@@ -17,7 +17,6 @@ const (
 	endMarker = "]]>]]>"
 )
 
-// Server is a minimal NETCONF-over-TCP server for lab/testing.
 type Server struct {
 	Addr  string
 	Store *metrics.Store
@@ -26,6 +25,10 @@ type Server struct {
 
 func NewServer(addr string, store *metrics.Store, log zerolog.Logger) *Server {
 	return &Server{Addr: addr, Store: store, Log: log}
+}
+
+func (s *Server) Name() string {
+	return "netconf-tcp"
 }
 
 func (s *Server) Run(ctx context.Context) error {

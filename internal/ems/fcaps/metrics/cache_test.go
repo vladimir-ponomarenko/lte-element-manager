@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,7 +45,14 @@ func TestCacheWritesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
-	if string(data) != raw {
-		t.Fatalf("snapshot mismatch: %s", string(data))
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("snapshot json invalid: %v", err)
+	}
+	if got["type"] != "enb_metrics" || got["enb_serial"] != "enb-1" {
+		t.Fatalf("unexpected snapshot root: %v", got)
+	}
+	if _, ok := got["timestamp"]; !ok {
+		t.Fatalf("missing timestamp in snapshot: %v", got)
 	}
 }

@@ -5,19 +5,17 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"lte-element-manager/internal/ems/worker"
 )
 
-type runner interface {
-	Run(ctx context.Context) error
-}
-
 type NetconfServer struct {
-	Server runner
+	Worker worker.Worker
 	Log    zerolog.Logger
 }
 
-func NewNetconfServer(server runner, log zerolog.Logger) *NetconfServer {
-	return &NetconfServer{Server: server, Log: log}
+func NewNetconfServer(w worker.Worker, log zerolog.Logger) *NetconfServer {
+	return &NetconfServer{Worker: w, Log: log}
 }
 
 func (s *NetconfServer) Name() string {
@@ -25,23 +23,10 @@ func (s *NetconfServer) Name() string {
 }
 
 func (s *NetconfServer) Run(ctx context.Context) error {
-	backoff := 2 * time.Second
-	for {
-		if err := s.Server.Run(ctx); err != nil {
-			s.Log.Error().Err(err).Msg("netconf server crashed")
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(backoff):
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
-				if backoff > 30*time.Second {
-					backoff = 30 * time.Second
-				}
-			}
-			continue
-		}
-		return nil
+	sup := &worker.Supervisor{
+		Worker:  s.Worker,
+		Backoff: worker.NewExponentialBackoff(1*time.Second, 30*time.Second, 30*time.Second, 0.1),
+		Log:     s.Log,
 	}
+	return sup.Run(ctx)
 }

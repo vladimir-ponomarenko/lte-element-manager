@@ -5,9 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -23,6 +23,10 @@ type ProcessServer struct {
 	AuthorizedKey string
 	Username      string
 	Log           zerolog.Logger
+}
+
+func (p *ProcessServer) Name() string {
+	return "netconf-server"
 }
 
 func (p *ProcessServer) Run(ctx context.Context) error {
@@ -53,6 +57,7 @@ func (p *ProcessServer) Run(ctx context.Context) error {
 	}
 
 	p.Log.Info().Str("addr", p.Addr).Msg("netconf ssh server started")
+	p.Log.Debug().Int("pid", cmd.Process.Pid).Msg("netconf process started")
 
 	done := make(chan error, 1)
 	go func() {
@@ -67,9 +72,11 @@ func (p *ProcessServer) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		_ = cmd.Process.Signal(os.Interrupt)
+		p.Log.Debug().Msg("netconf stopping (context canceled)")
+		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
 		case <-time.After(5 * time.Second):
+			p.Log.Debug().Msg("netconf kill (grace timeout)")
 			_ = cmd.Process.Kill()
 		case <-done:
 		}
@@ -83,31 +90,43 @@ func scanNetconfOutput(r io.Reader, log zerolog.Logger) {
 	scanner := bufio.NewScanner(r)
 	buf := make([]byte, 0, 256*1024)
 	scanner.Buffer(buf, 4*1024*1024)
+	debug := log.GetLevel() <= zerolog.DebugLevel
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "NETCONF_GET ") {
 			emitNetconfGetLog(line, log)
 			continue
 		}
-		log.Debug().Msg(line)
+		if debug {
+			log.Debug().Msg(line)
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		log.Debug().Err(err).Msg("netconf stdout scan failed")
+		if debug {
+			log.Debug().Err(err).Msg("netconf stdout scan failed")
+		}
 	}
 }
 
 func scanNetconfErrors(r io.Reader, log zerolog.Logger) {
 	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	debug := log.GetLevel() <= zerolog.DebugLevel
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "[ERR]") || strings.Contains(line, "ERROR") {
+		if strings.Contains(line, "[ERR]") || strings.Contains(line, "ERROR") || strings.Contains(line, "error") {
 			log.Error().Msg(line)
 			continue
 		}
-		log.Debug().Msg(line)
+		if debug {
+			log.Debug().Msg(line)
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		log.Debug().Err(err).Msg("netconf stderr scan failed")
+		if debug {
+			log.Debug().Err(err).Msg("netconf stderr scan failed")
+		}
 	}
 }
 

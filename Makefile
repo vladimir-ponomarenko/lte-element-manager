@@ -30,13 +30,29 @@ LIBNETCONF2_CMAKE_FLAGS := \
 
 .PHONY: all bootstrap deps clone clone-libyang clone-libnetconf2 \
 	update-libyang update-libnetconf2 libyang libnetconf2 clean distclean \
-	build build-netconf build-netconf-server run
+	build build-netconf build-netconf-server run test cover
 
 all: libnetconf2 libyang
 
 
 build:
 	$(GO) build -o ems-agent ./cmd/ems-agent
+
+test:
+	CGO_ENABLED=0 $(GO) test ./...
+
+cover:
+	@mkdir -p .artifacts
+	CGO_ENABLED=0 $(GO) test ./... -covermode=atomic -coverprofile=.artifacts/coverage.out
+	$(GO) tool cover -func=.artifacts/coverage.out | tee .artifacts/coverage.txt
+	$(GO) tool cover -html=.artifacts/coverage.out -o .artifacts/coverage.html
+	@awk 'BEGIN { FS="[: ,]+" } NR==1 { next } { file=$$1; stmts=$$(NF-1); count=$$NF; total[file]+=stmts; if (count>0) covered[file]+=stmts } END { for (f in total) { pct=(total[f]>0)?(100*covered[f]/total[f]):0; printf "%.2f\t%d\t%d\t%s\n", pct, covered[f], total[f], f } }' .artifacts/coverage.out | sort -n > .artifacts/coverage_by_file.tsv
+	@awk 'BEGIN { FS="\t" } { printf "%6.2f%% %5d/%5d %s\n", $$1, $$2, $$3, $$4 }' .artifacts/coverage_by_file.tsv > .artifacts/coverage_by_file.txt
+	@echo ""
+	@echo "Lowest-covered files (statements):"
+	@head -n 25 .artifacts/coverage_by_file.txt
+	@echo ""
+	@echo "Open: .artifacts/coverage.html"
 
 build-netconf: libnetconf2 libyang
 	CGO_ENABLED=1 LD_LIBRARY_PATH=$(PREFIX_DIR)/lib $(GO) build -tags netconf -o ems-agent ./cmd/ems-agent

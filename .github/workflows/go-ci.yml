@@ -1,0 +1,99 @@
+name: Go CI (EMS Agent)
+
+on:
+  push:
+    branches: ["**"]
+  pull_request: {}
+  workflow_dispatch: {}
+
+concurrency:
+  group: go-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests + coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+          cache-dependency-path: |
+            go.sum
+
+      - name: Build (no CGO)
+        env:
+          CGO_ENABLED: "0"
+          GOFLAGS: "-buildvcs=false"
+        run: |
+          go build ./...
+
+      - name: Run unit tests with coverage
+        id: coverage
+        env:
+          CGO_ENABLED: "0"
+          GOFLAGS: "-buildvcs=false"
+        run: |
+          mkdir -p .artifacts
+          go test ./... -covermode=atomic -coverprofile=.artifacts/coverage.out
+          go tool cover -func=.artifacts/coverage.out | tee .artifacts/coverage.txt
+          go tool cover -html=.artifacts/coverage.out -o .artifacts/coverage.html
+
+          total_cov=$(awk '/^total:/{print $3}' .artifacts/coverage.txt | tail -n 1)
+          echo "total=${total_cov:-unknown}" >> "$GITHUB_OUTPUT"
+
+          awk '
+            BEGIN { FS="[: ,]+" }
+            NR==1 { next }
+            {
+              file=$1
+              stmts=$(NF-1)
+              count=$NF
+              total[file]+=stmts
+              if (count>0) covered[file]+=stmts
+            }
+            END {
+              for (f in total) {
+                pct=(total[f]>0)?(100*covered[f]/total[f]):0
+                printf "%.2f\t%d\t%d\t%s\n", pct, covered[f], total[f], f
+              }
+            }
+          ' .artifacts/coverage.out | sort -n > .artifacts/coverage_by_file.tsv
+
+          awk '
+            BEGIN { FS="\t" }
+            { printf "%6.2f%% %5d/%5d %s\n", $1, $2, $3, $4 }
+          ' .artifacts/coverage_by_file.tsv > .artifacts/coverage_by_file.txt
+
+      - name: Job summary
+        run: |
+          echo "## Coverage: ${{ steps.coverage.outputs.total }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "### Lowest-covered files (statements)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Coverage | Covered | File |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ---: | ---: | --- |" >> "$GITHUB_STEP_SUMMARY"
+          head -n 25 .artifacts/coverage_by_file.tsv | awk -F '\t' '{printf "| %s%% | %d/%d | %s |\n", $1, $2, $3, $4}' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Download full HTML report: coverage.html" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: .artifacts/
+          if-no-files-found: error
+          retention-days: 1
