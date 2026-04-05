@@ -30,6 +30,7 @@ profile.cov
 /.build/
 /.local/
 /third_party/
+/.artifacts/
 
 # Go workspace file
 go.work

@@ -2,7 +2,6 @@ name: Go CI (EMS Agent)
 
 on:
   push:
-    branches: ["**"]
   pull_request: {}
   workflow_dispatch: {}
 
@@ -33,6 +32,11 @@ jobs:
           cache-dependency-path: |
             go.sum
 
+      - name: Prepare artifacts directory
+        run: |
+          mkdir -p .artifacts
+          : > .artifacts/.keep
+
       - name: Build (no CGO)
         env:
           CGO_ENABLED: "0"
@@ -46,8 +50,10 @@ jobs:
           CGO_ENABLED: "0"
           GOFLAGS: "-buildvcs=false"
         run: |
-          mkdir -p .artifacts
           go test ./... -covermode=atomic -coverprofile=.artifacts/coverage.out
+          if [ ! -s .artifacts/coverage.out ]; then
+            echo "mode: atomic" > .artifacts/coverage.out
+          fi
           go tool cover -func=.artifacts/coverage.out | tee .artifacts/coverage.txt
           go tool cover -html=.artifacts/coverage.out -o .artifacts/coverage.html
 
@@ -94,6 +100,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: go-coverage
-          path: .artifacts/
+          path: .artifacts/**
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
