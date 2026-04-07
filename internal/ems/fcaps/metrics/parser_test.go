@@ -1,6 +1,10 @@
 package metrics
 
-import "testing"
+import (
+	"testing"
+
+	"lte-element-manager/internal/ems/domain"
+)
 
 func TestParseEnbMetrics_OK(t *testing.T) {
 	payload := []byte(`{
@@ -44,4 +48,25 @@ func TestParseEnbMetrics_InvalidType(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
+}
+
+func TestParseEnbMetrics_MissingRoot(t *testing.T) {
+	_, err := ParseEnbMetrics([]byte(`{"type":"enb_metrics","timestamp":1}`))
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
+func TestParserFor_Unsupported(t *testing.T) {
+	if ParserFor("epc") != nil {
+		t.Fatalf("expected nil parser")
+	}
+}
+
+func TestParserFor_ENB(t *testing.T) {
+	p := ParserFor(domain.ElementENB)
+	if p == nil {
+		t.Fatalf("expected parser")
+	}
+	_, _ = p([]byte(`{"type":"wrong","timestamp":1}`))
 }

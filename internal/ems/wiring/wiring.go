@@ -2,7 +2,6 @@ package wiring
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/rs/zerolog"
 
@@ -11,11 +10,14 @@ import (
 	"lte-element-manager/internal/ems/bus"
 	"lte-element-manager/internal/ems/config"
 	"lte-element-manager/internal/ems/domain"
+	"lte-element-manager/internal/ems/fcaps/alarms"
 	"lte-element-manager/internal/ems/fcaps/metrics"
+	"lte-element-manager/internal/ems/health"
 	"lte-element-manager/internal/ems/logging"
 	"lte-element-manager/internal/ems/netconf"
 	"lte-element-manager/internal/ems/service"
 	"lte-element-manager/internal/ems/services"
+	emserrors "lte-element-manager/internal/errors"
 )
 
 // Container wires dependencies for the EMS agent.
@@ -30,11 +32,10 @@ func New(cfg config.Config, log zerolog.Logger) *Container {
 
 // Build assembles services and returns a runner ready to execute.
 func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
-	_ = ctx
-
 	logMetrics := logging.WithComponent(c.log, c.cfg.Log, "metrics")
 	logAdapter := logging.WithComponent(c.log, c.cfg.Log, "adapter")
 	logNetconf := logging.WithComponent(c.log, c.cfg.Log, "netconf")
+	logFaults := logging.WithComponent(c.log, c.cfg.Log, "faults")
 
 	b := bus.New(c.cfg.Bus.Buffer)
 	metricsOut := make(chan domain.MetricSample, 200)
@@ -48,7 +49,13 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	parser := metrics.ParserFor(domain.ElementType(c.cfg.Element.Type))
 
 	runner := service.NewRunner(c.log)
-	reader := services.NewMetricsReader(agent, metricsOut, logAdapter)
+	h := health.New()
+
+	alarmStore := alarms.NewStore()
+	alarmMgr := alarms.NewManager(alarmStore)
+	runner.Add(services.NewFaultService(b, h, alarmMgr, logFaults))
+
+	reader := services.NewMetricsReader(agent, metricsOut, logAdapter, h)
 	reader.LogUDS = c.cfg.Metrics.LogUDS
 	runner.Add(reader)
 	runner.Add(services.NewMetricsConsumer(metricsOut, b, parser, logMetrics))
@@ -61,10 +68,16 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	if c.cfg.Netconf.Enabled {
 		if c.cfg.Netconf.Transport == "ssh" {
 			if c.cfg.Netconf.SSH.HostKey == "" || c.cfg.Netconf.SSH.AuthorizedKey == "" || c.cfg.Netconf.SSH.Username == "" {
-				return nil, fmt.Errorf("netconf ssh config is incomplete")
+				return nil, emserrors.New(emserrors.ErrCodeConfig, "netconf ssh config is incomplete",
+					emserrors.WithOp("wiring"),
+					emserrors.WithSeverity(emserrors.SeverityCritical),
+				)
 			}
 			if c.cfg.Netconf.SnapshotPath == "" {
-				return nil, fmt.Errorf("netconf snapshot_path is empty")
+				return nil, emserrors.New(emserrors.ErrCodeConfig, "netconf snapshot_path is empty",
+					emserrors.WithOp("wiring"),
+					emserrors.WithSeverity(emserrors.SeverityCritical),
+				)
 			}
 			server := &netconf.ProcessServer{
 				Binary:        "/app/netconf-server",
@@ -76,11 +89,14 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 				Username:      c.cfg.Netconf.SSH.Username,
 				Log:           logNetconf,
 			}
-			runner.Add(services.NewNetconfServer(server, logNetconf))
+			runner.Add(services.NewNetconfServer(server, logNetconf, h))
 		} else {
 			server := netconf.NewServer(c.cfg.Netconf.Addr, metricsStore, logNetconf)
-			runner.Add(services.NewNetconfServer(server, logNetconf))
+			runner.Add(services.NewNetconfServer(server, logNetconf, h))
 		}
+	} else {
+		// Mark NETCONF as up when disabled so overall health reflects UDS connectivity.
+		h.Up(health.ComponentNetconf)
 	}
 
 	return runner, nil

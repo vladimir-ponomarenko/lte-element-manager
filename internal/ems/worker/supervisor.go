@@ -12,6 +12,9 @@ type Supervisor struct {
 	Worker  Worker
 	Backoff Backoff
 	Log     zerolog.Logger
+
+	OnStart func(name string)
+	OnExit  func(name string, err error, uptime time.Duration)
 }
 
 func (s *Supervisor) Run(ctx context.Context) error {
@@ -24,6 +27,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 	for {
 		s.Log.Debug().Str("worker", s.Worker.Name()).Msg("worker starting")
+		if s.OnStart != nil {
+			s.OnStart(s.Worker.Name())
+		}
 		start := time.Now()
 		err := s.Worker.Run(ctx)
 		uptime := time.Since(start)
@@ -33,6 +39,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			Dur("uptime", uptime).
 			Err(err).
 			Msg("worker exited")
+		if s.OnExit != nil {
+			s.OnExit(s.Worker.Name(), err, uptime)
+		}
 
 		select {
 		case <-ctx.Done():

@@ -3,7 +3,6 @@ package netconf
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -11,6 +10,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	emserrors "lte-element-manager/internal/errors"
 )
 
 // ProcessServer wraps the libnetconf2 SSH server binary.
@@ -25,13 +26,19 @@ type ProcessServer struct {
 	Log           zerolog.Logger
 }
 
+var execCommand = exec.Command
+var processKillTimeout = 5 * time.Second
+
 func (p *ProcessServer) Name() string {
 	return "netconf-server"
 }
 
 func (p *ProcessServer) Run(ctx context.Context) error {
 	if p.Binary == "" {
-		return fmt.Errorf("netconf binary is empty")
+		return emserrors.New(emserrors.ErrCodeConfig, "netconf binary is empty",
+			emserrors.WithOp("netconf"),
+			emserrors.WithSeverity(emserrors.SeverityCritical),
+		)
 	}
 	args := []string{
 		"-addr", p.Addr,
@@ -42,18 +49,27 @@ func (p *ProcessServer) Run(ctx context.Context) error {
 		"-user", p.Username,
 	}
 
-	cmd := exec.Command(p.Binary, args...)
+	cmd := execCommand(p.Binary, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return emserrors.Wrap(err, emserrors.ErrCodeProcess, "attach stdout pipe failed",
+			emserrors.WithOp("netconf"),
+			emserrors.WithSeverity(emserrors.SeverityMajor),
+		)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return err
+		return emserrors.Wrap(err, emserrors.ErrCodeProcess, "attach stderr pipe failed",
+			emserrors.WithOp("netconf"),
+			emserrors.WithSeverity(emserrors.SeverityMajor),
+		)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return emserrors.Wrap(err, emserrors.ErrCodeProcess, "start netconf process failed",
+			emserrors.WithOp("netconf"),
+			emserrors.WithSeverity(emserrors.SeverityCritical),
+		)
 	}
 
 	p.Log.Info().Str("addr", p.Addr).Msg("netconf ssh server started")
@@ -75,14 +91,17 @@ func (p *ProcessServer) Run(ctx context.Context) error {
 		p.Log.Debug().Msg("netconf stopping (context canceled)")
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(processKillTimeout):
 			p.Log.Debug().Msg("netconf kill (grace timeout)")
 			_ = cmd.Process.Kill()
 		case <-done:
 		}
 		return nil
 	case err := <-done:
-		return err
+		return emserrors.Wrap(err, emserrors.ErrCodeProcess, "netconf process exited",
+			emserrors.WithOp("netconf"),
+			emserrors.WithSeverity(emserrors.SeverityCritical),
+		)
 	}
 }
 

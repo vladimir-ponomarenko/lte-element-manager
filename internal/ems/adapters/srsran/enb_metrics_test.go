@@ -14,6 +14,9 @@ import (
 )
 
 func TestENBMetricsReader(t *testing.T) {
+	udsReadDeadline = 10 * time.Millisecond
+	t.Cleanup(func() { udsReadDeadline = time.Second })
+
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "metrics.uds")
 
@@ -68,5 +71,42 @@ func TestENBMetricsReader(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timeout waiting for sample")
+	}
+}
+
+func TestENBMetricsReader_CancelNoData(t *testing.T) {
+	udsReadDeadline = 10 * time.Millisecond
+	t.Cleanup(func() { udsReadDeadline = time.Second })
+
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "metrics2.uds")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan domain.MetricSample, 1)
+	reader := &ENBMetricsReader{SocketPath: sock}
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- reader.Run(ctx, out) }()
+
+	// Wait for socket.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(sock); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("socket not created")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout")
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
 	}
 }

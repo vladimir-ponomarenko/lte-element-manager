@@ -20,7 +20,10 @@ func Consume(ctx context.Context, in <-chan domain.MetricSample, b *bus.Bus, par
 		select {
 		case <-ctx.Done():
 			return
-		case s := <-in:
+		case s, ok := <-in:
+			if !ok {
+				return
+			}
 			if parser != nil && s.Parsed == nil {
 				parsed, err := parser([]byte(s.RawJSON))
 				if err != nil {

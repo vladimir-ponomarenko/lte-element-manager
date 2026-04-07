@@ -2,6 +2,7 @@ package netconf
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -11,11 +12,14 @@ import (
 	"github.com/rs/zerolog"
 
 	"lte-element-manager/internal/ems/fcaps/metrics"
+	emserrors "lte-element-manager/internal/errors"
 )
 
 const (
 	endMarker = "]]>]]>"
 )
+
+var endMarkerBytes = []byte(endMarker)
 
 type Server struct {
 	Addr  string
@@ -33,12 +37,18 @@ func (s *Server) Name() string {
 
 func (s *Server) Run(ctx context.Context) error {
 	if s.Addr == "" {
-		return fmt.Errorf("netconf addr is empty")
+		return emserrors.New(emserrors.ErrCodeConfig, "netconf addr is empty",
+			emserrors.WithOp("netconf-tcp"),
+			emserrors.WithSeverity(emserrors.SeverityCritical),
+		)
 	}
 
 	ln, err := net.Listen("tcp", s.Addr)
 	if err != nil {
-		return err
+		return emserrors.Wrap(err, emserrors.ErrCodeNetwork, "netconf listen failed",
+			emserrors.WithOp("netconf-tcp"),
+			emserrors.WithSeverity(emserrors.SeverityCritical),
+		)
 	}
 	defer ln.Close()
 
@@ -101,16 +111,16 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 }
 
 func readNetconf(r *bufio.Reader) (string, error) {
-	var buf strings.Builder
+	var buf bytes.Buffer
 	for {
-		chunk, err := r.ReadString('>')
+		chunk, err := r.ReadBytes('>')
 		if err != nil {
 			return "", err
 		}
-		buf.WriteString(chunk)
-		if strings.Contains(buf.String(), endMarker) {
-			raw := buf.String()
-			return strings.TrimSuffix(raw, endMarker), nil
+		buf.Write(chunk)
+		b := buf.Bytes()
+		if i := bytes.Index(b, endMarkerBytes); i >= 0 {
+			return string(b[:i]), nil
 		}
 	}
 }

@@ -1,9 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
-	"bufio"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,31 +19,38 @@ import (
 )
 
 func main() {
-	selfCheck := flag.Bool("self-check", false, "print runtime wiring info and exit")
-	configPath := flag.String("config", "", "path to ems-agent config file")
-	flag.Parse()
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("ems-agent", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	selfCheck := fs.Bool("self-check", false, "print runtime wiring info and exit")
+	configPath := fs.String("config", "", "path to ems-agent config file")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		bootLog := zerolog.New(os.Stderr).With().Timestamp().Logger()
+		bootLog := zerolog.New(stderr).With().Timestamp().Logger()
 		bootLog.Error().Err(err).Msg("config error")
-		os.Exit(1)
+		return 1
 	}
 
 	log := logging.New(cfg.Log).With().Str("element", cfg.Element.Type).Logger()
 
 	if *selfCheck {
-		w := bufio.NewWriter(os.Stdout)
+		w := bufio.NewWriter(stdout)
 		_, _ = w.WriteString("netconf_enabled=" + strconv.FormatBool(netconf.Enabled()) + "\n")
 		_, _ = w.WriteString("config_path=" + *configPath + "\n")
 		_, _ = w.WriteString("element_type=" + cfg.Element.Type + "\n")
 		_, _ = w.WriteString("socket_path=" + cfg.Element.SocketPath + "\n")
 		_, _ = w.WriteString("bus_buffer=" + strconv.Itoa(cfg.Bus.Buffer) + "\n")
 		_ = w.Flush()
-		return
+		return 0
 	}
 
 	log.Info().
@@ -56,12 +64,13 @@ func main() {
 	runner, err := container.Build(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("wiring failed")
-		return
+		return 0
 	}
 
 	if err := runner.Run(ctx); err != nil {
 		log.Error().Err(err).Msg("ems agent stopped with error")
-		return
+		return 0
 	}
 	log.Info().Msg("ems agent stopped")
+	return 0
 }

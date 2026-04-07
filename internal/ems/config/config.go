@@ -93,7 +93,7 @@ func Default() Config {
 		},
 		Metrics: MetricsConfig{
 			SnapshotPath: "",
-			LogUDS:        false,
+			LogUDS:       false,
 		},
 		Netconf: NetconfConfig{
 			Enabled:      false,

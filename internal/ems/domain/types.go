@@ -13,8 +13,9 @@ type MetricSample struct {
 }
 
 type Alarm struct {
-	Code    string
-	Message string
+	Code     string
+	Message  string
+	Severity string
 }
 
 type Command struct {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"sort"
 
 	"lte-element-manager/internal/ems/fcaps/metrics"
 )
@@ -60,7 +61,14 @@ func buildMetricsReply(store *metrics.Store) (string, error) {
 }
 
 func encodeMap(enc *xml.Encoder, m map[string]any) error {
-	for k, v := range m {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v := m[k]
 		switch val := v.(type) {
 		case map[string]any:
 			if err := encodeElement(enc, k, val); err != nil {

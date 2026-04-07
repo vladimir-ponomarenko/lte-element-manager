@@ -61,19 +61,6 @@ func normalizeSnapshotJSON(raw string) (string, error) {
 	normalizeStructure(root)
 	normalizeTypes(root)
 
-	cellList, ok := asSlice(root["cell_list"])
-	if !ok {
-		out, err := json.Marshal(root)
-		if err != nil {
-			return "", err
-		}
-		return string(out), nil
-	}
-
-	for _, cellEntry := range cellList {
-		_ = cellEntry
-	}
-
 	out, err := json.Marshal(root)
 	if err != nil {
 		return "", err
