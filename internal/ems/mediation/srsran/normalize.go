@@ -1,56 +1,14 @@
-package metrics
+package srsran
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-
-	"github.com/rs/zerolog"
-
-	"lte-element-manager/internal/ems/bus"
 )
 
-// Cache keeps the latest metric sample in the store.
-func Cache(ctx context.Context, b *bus.Bus, store *Store, snapshotPath string, log zerolog.Logger) {
-	sub := b.Subscribe(ctx)
-	for msg := range sub {
-		evt, ok := msg.(Event)
-		if !ok {
-			continue
-		}
-		store.Update(evt.Sample)
-		if snapshotPath != "" {
-			if err := writeSnapshot(snapshotPath, evt.Sample.RawJSON); err != nil {
-				log.Warn().Err(err).Msg("metrics snapshot write failed")
-			}
-		}
-		log.Debug().Msg("metrics cached")
-	}
-}
-
-func writeSnapshot(path, raw string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-
-	normalized, err := normalizeSnapshotJSON(raw)
-	if err != nil {
-		return fmt.Errorf("normalize snapshot json: %w", err)
-	}
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(normalized), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func normalizeSnapshotJSON(raw string) (string, error) {
+// NormalizeForNetconf prepares srsRAN raw JSON for libyang strict parsing.
+func NormalizeForNetconf(raw string) (string, error) {
 	var root map[string]any
 	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
 	dec.UseNumber()

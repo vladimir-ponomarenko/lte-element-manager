@@ -94,6 +94,16 @@ func TestENBMetricsReader_CancelNoData(t *testing.T) {
 		if _, err := os.Stat(sock); err == nil {
 			break
 		}
+		select {
+		case err := <-errCh:
+			if err != nil {
+				if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) || os.IsPermission(err) {
+					t.Skipf("socket bind not permitted in this environment: %v", err)
+				}
+				t.Fatalf("reader error: %v", err)
+			}
+		default:
+		}
 		if time.Now().After(deadline) {
 			t.Fatalf("socket not created")
 		}

@@ -18,6 +18,10 @@ type Config struct {
 	Metrics MetricsConfig `yaml:"metrics"`
 	// Netconf controls NETCONF server settings.
 	Netconf NetconfConfig `yaml:"netconf"`
+	// NRM controls managed-object topology settings.
+	NRM NRMConfig `yaml:"nrm"`
+	// PM controls performance management engine settings.
+	PM PMConfig `yaml:"pm"`
 }
 
 type ElementConfig struct {
@@ -76,6 +80,18 @@ type NetconfSSHConfig struct {
 	Username string `yaml:"username"`
 }
 
+type NRMConfig struct {
+	SubNetwork     string `yaml:"subnetwork"`
+	ManagedElement string `yaml:"managed_element"`
+	ENBFunctionID  string `yaml:"enb_function_id"`
+}
+
+type PMConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	GranularityPeriod string `yaml:"granularity_period"`
+	ReportPeriod      string `yaml:"report_period"`
+}
+
 func Default() Config {
 	return Config{
 		Element: ElementConfig{
@@ -106,6 +122,16 @@ func Default() Config {
 				AuthorizedKey: "",
 				Username:      "admin",
 			},
+		},
+		NRM: NRMConfig{
+			SubNetwork:     "srsRAN",
+			ManagedElement: "enb1",
+			ENBFunctionID:  "1",
+		},
+		PM: PMConfig{
+			Enabled:           false,
+			GranularityPeriod: "10s",
+			ReportPeriod:      "10s",
 		},
 	}
 }
@@ -177,6 +203,21 @@ func applyDefaults(cfg *Config) {
 	if cfg.Netconf.SSH.Username == "" {
 		cfg.Netconf.SSH.Username = def.Netconf.SSH.Username
 	}
+	if cfg.NRM.SubNetwork == "" {
+		cfg.NRM.SubNetwork = def.NRM.SubNetwork
+	}
+	if cfg.NRM.ManagedElement == "" {
+		cfg.NRM.ManagedElement = def.NRM.ManagedElement
+	}
+	if cfg.NRM.ENBFunctionID == "" {
+		cfg.NRM.ENBFunctionID = def.NRM.ENBFunctionID
+	}
+	if cfg.PM.GranularityPeriod == "" {
+		cfg.PM.GranularityPeriod = def.PM.GranularityPeriod
+	}
+	if cfg.PM.ReportPeriod == "" {
+		cfg.PM.ReportPeriod = def.PM.ReportPeriod
+	}
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -230,6 +271,24 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := envString("EMS_NETCONF_SSH_USERNAME", "NETCONF_SSH_USERNAME"); v != "" {
 		cfg.Netconf.SSH.Username = v
+	}
+	if v := envString("EMS_NRM_SUBNETWORK", "NRM_SUBNETWORK"); v != "" {
+		cfg.NRM.SubNetwork = v
+	}
+	if v := envString("EMS_NRM_MANAGED_ELEMENT", "NRM_MANAGED_ELEMENT"); v != "" {
+		cfg.NRM.ManagedElement = v
+	}
+	if v := envString("EMS_NRM_ENB_FUNCTION_ID", "NRM_ENB_FUNCTION_ID"); v != "" {
+		cfg.NRM.ENBFunctionID = v
+	}
+	if v, ok := envBool("EMS_PM_ENABLED", "PM_ENABLED"); ok {
+		cfg.PM.Enabled = v
+	}
+	if v := envString("EMS_PM_GRANULARITY_PERIOD", "PM_GRANULARITY_PERIOD"); v != "" {
+		cfg.PM.GranularityPeriod = v
+	}
+	if v := envString("EMS_PM_REPORT_PERIOD", "PM_REPORT_PERIOD"); v != "" {
+		cfg.PM.ReportPeriod = v
 	}
 }
 

@@ -3,7 +3,7 @@ module ems-enb-metrics {
   namespace "urn:ems:enb:metrics";
   prefix ems;
 
-  organization "LTE Element Manager";
+  organization "Sibsutis&Yadro";
   contact "";
   description
     "YANG model for srsENB JSON metrics exposed by EMS agent.";
@@ -12,8 +12,8 @@ module ems-enb-metrics {
     description "Initial revision.";
   }
 
-  container enb_metrics {
-    description "Top-level ENB metrics payload.";
+  grouping enb-metrics-body {
+    description "Body of enb_metrics container (vendor payload).";
 
     leaf type { type string; }
     leaf enb_serial { type string; }
@@ -250,5 +250,10 @@ module ems-enb-metrics {
         }
       }
     }
+  }
+
+  container enb_metrics {
+    description "Top-level ENB metrics payload.";
+    uses enb-metrics-body;
   }
 }

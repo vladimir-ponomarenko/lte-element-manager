@@ -9,7 +9,6 @@ import (
 
 	"lte-element-manager/internal/ems/bus"
 	"lte-element-manager/internal/ems/domain"
-	"lte-element-manager/internal/ems/fcaps/metrics"
 )
 
 func TestMetricsConsumer_Run(t *testing.T) {
@@ -28,24 +27,6 @@ func TestMetricsLogger_Run(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := bus.New(10)
 	s := NewMetricsLogger(b, zerolog.Nop())
-
-	done := make(chan error, 1)
-	go func() { done <- s.Run(ctx) }()
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timeout")
-	}
-}
-
-func TestMetricsCache_Run(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	b := bus.New(10)
-	store := metrics.NewStore()
-	s := NewMetricsCache(b, store, "", zerolog.Nop())
 
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()

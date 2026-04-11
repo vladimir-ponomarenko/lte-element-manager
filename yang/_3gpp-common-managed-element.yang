@@ -1,0 +1,93 @@
+module _3gpp-common-managed-element {
+  yang-version 1.1;
+
+  namespace "urn:3gpp:sa5:_3gpp-common-managed-element";
+  prefix cme;
+
+  organization "Sibsutis&Yadro";
+  description
+    "Common Managed Element model.
+
+     This module defines the managed object hierarchy and operational PM
+     measurements exposed northbound via NETCONF/YANG.";
+
+  revision 2026-04-15 {
+    description "Initial NRM + PM subset for EMS agent.";
+  }
+
+  typedef id-string {
+    type string {
+      length "1..128";
+    }
+    description "Generic MO identifier (config key).";
+  }
+
+  grouping measurements-group {
+    description "Minimal PM measurements container (operational).";
+    container measurements {
+      config false;
+
+      leaf throughputDL {
+        type decimal64 { fraction-digits 6; }
+        units "bps";
+      }
+
+      leaf throughputUL {
+        type decimal64 { fraction-digits 6; }
+        units "bps";
+      }
+
+      leaf sinrUL {
+        type decimal64 { fraction-digits 6; }
+        units "dB";
+      }
+
+      leaf cqiDL {
+        type decimal64 { fraction-digits 6; }
+        units "index";
+      }
+    }
+  }
+
+  list SubNetwork {
+    key "id";
+    description "Top-level SubNetwork.";
+
+    leaf id {
+      type id-string;
+      config true;
+    }
+
+    list ManagedElement {
+      key "id";
+      description "ManagedElement (NRM root).";
+
+      leaf id {
+        type id-string;
+        config true;
+      }
+
+      list ENBFunction {
+        key "id";
+        description "LTE eNB function.";
+
+        leaf id {
+          type id-string;
+          config true;
+        }
+
+        list EUtranCell {
+          key "id";
+          description "E-UTRAN cell managed object.";
+
+          leaf id {
+            type id-string;
+            config true;
+          }
+
+          uses measurements-group;
+        }
+      }
+    }
+  }
+}

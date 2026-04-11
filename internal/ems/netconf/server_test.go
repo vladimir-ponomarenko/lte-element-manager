@@ -3,8 +3,10 @@ package netconf
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -124,6 +126,9 @@ func TestServer_Run_Cancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := s.Run(ctx); err != nil {
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			t.Skipf("tcp listen not permitted in this environment: %v", err)
+		}
 		t.Fatalf("unexpected: %v", err)
 	}
 }

@@ -10,13 +10,17 @@ import (
 	"lte-element-manager/internal/ems/bus"
 	"lte-element-manager/internal/ems/config"
 	"lte-element-manager/internal/ems/domain"
+	"lte-element-manager/internal/ems/domain/nrm"
 	"lte-element-manager/internal/ems/fcaps/alarms"
 	"lte-element-manager/internal/ems/fcaps/metrics"
+	"lte-element-manager/internal/ems/fcaps/pm"
 	"lte-element-manager/internal/ems/health"
 	"lte-element-manager/internal/ems/logging"
+	mediationSRSRAN "lte-element-manager/internal/ems/mediation/srsran"
 	"lte-element-manager/internal/ems/netconf"
 	"lte-element-manager/internal/ems/service"
 	"lte-element-manager/internal/ems/services"
+	"lte-element-manager/internal/ems/telemetry"
 	emserrors "lte-element-manager/internal/errors"
 )
 
@@ -36,17 +40,20 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	logAdapter := logging.WithComponent(c.log, c.cfg.Log, "adapter")
 	logNetconf := logging.WithComponent(c.log, c.cfg.Log, "netconf")
 	logFaults := logging.WithComponent(c.log, c.cfg.Log, "faults")
+	logPM := logging.WithComponent(c.log, c.cfg.Log, "pm")
 
 	b := bus.New(c.cfg.Bus.Buffer)
-	metricsOut := make(chan domain.MetricSample, 200)
-	metricsStore := metrics.NewStore()
+	rawIn := make(chan domain.MetricSample, 200)
+	rawForMapping := make(chan domain.MetricSample, 200)
+	rawForSnapshot := make(chan domain.MetricSample, 200)
+	rawStore := metrics.NewStore()
+	telemetryStore := telemetry.NewStore()
 
 	metricsSource, err := srsran.NewMetricsSource(domain.ElementType(c.cfg.Element.Type), c.cfg.Element.SocketPath)
 	if err != nil {
 		return nil, err
 	}
 	agent := app.New(metricsSource)
-	parser := metrics.ParserFor(domain.ElementType(c.cfg.Element.Type))
 
 	runner := service.NewRunner(c.log)
 	h := health.New()
@@ -55,15 +62,52 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	alarmMgr := alarms.NewManager(alarmStore)
 	runner.Add(services.NewFaultService(b, h, alarmMgr, logFaults))
 
-	reader := services.NewMetricsReader(agent, metricsOut, logAdapter, h)
+	reg, err := nrm.New(nrm.Config{
+		SubNetwork:     c.cfg.NRM.SubNetwork,
+		ManagedElement: c.cfg.NRM.ManagedElement,
+		ENBFunctionID:  c.cfg.NRM.ENBFunctionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	reader := services.NewMetricsReader(agent, rawIn, logAdapter, h)
 	reader.LogUDS = c.cfg.Metrics.LogUDS
 	runner.Add(reader)
-	runner.Add(services.NewMetricsConsumer(metricsOut, b, parser, logMetrics))
+
 	snapshotPath := c.cfg.Netconf.SnapshotPath
 	if snapshotPath == "" {
 		snapshotPath = c.cfg.Metrics.SnapshotPath
 	}
-	runner.Add(services.NewMetricsCache(b, metricsStore, snapshotPath, logMetrics))
+
+	runner.Add(services.NewRawFanout(rawIn, rawForMapping, rawForSnapshot, logAdapter))
+	pmStore := pm.NewStore()
+	runner.Add(services.NewNetconfSnapshot(
+		rawForSnapshot,
+		rawStore,
+		snapshotPath,
+		netconf.SnapshotConfig{
+			SubNetwork:     c.cfg.NRM.SubNetwork,
+			ManagedElement: c.cfg.NRM.ManagedElement,
+			ENBFunctionID:  c.cfg.NRM.ENBFunctionID,
+		},
+		reg,
+		pmStore,
+		logMetrics,
+	))
+
+	mapper := &mediationSRSRAN.Mapper{SourceID: c.cfg.NRM.ManagedElement}
+	runner.Add(services.NewMetricsConsumer(rawForMapping, b, mapper, logMetrics))
+	runner.Add(services.NewTelemetryCache(b, telemetryStore, logMetrics))
+
+	if c.cfg.PM.Enabled {
+		pmCfg, err := pm.ParseConfig(c.cfg.PM.GranularityPeriod, c.cfg.PM.ReportPeriod)
+		if err != nil {
+			return nil, err
+		}
+		engine := pm.NewEngine(b, reg, pmStore, pmCfg, logPM)
+		runner.Add(services.NewPMEngine(engine, logPM))
+	}
 
 	if c.cfg.Netconf.Enabled {
 		if c.cfg.Netconf.Transport == "ssh" {
@@ -91,7 +135,7 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 			}
 			runner.Add(services.NewNetconfServer(server, logNetconf, h))
 		} else {
-			server := netconf.NewServer(c.cfg.Netconf.Addr, metricsStore, logNetconf)
+			server := netconf.NewServer(c.cfg.Netconf.Addr, rawStore, logNetconf)
 			runner.Add(services.NewNetconfServer(server, logNetconf, h))
 		}
 	} else {

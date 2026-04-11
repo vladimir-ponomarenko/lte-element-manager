@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -77,7 +78,7 @@ func (p *ProcessServer) Run(ctx context.Context) error {
 
 	done := make(chan error, 1)
 	go func() {
-		scanNetconfOutput(stdout, p.Log)
+		scanNetconfOutput(stdout, p.SnapshotPath, p.Log)
 	}()
 	go func() {
 		scanNetconfErrors(stderr, p.Log)
@@ -105,15 +106,16 @@ func (p *ProcessServer) Run(ctx context.Context) error {
 	}
 }
 
-func scanNetconfOutput(r io.Reader, log zerolog.Logger) {
+func scanNetconfOutput(r io.Reader, snapshotPath string, log zerolog.Logger) {
 	scanner := bufio.NewScanner(r)
 	buf := make([]byte, 0, 256*1024)
-	scanner.Buffer(buf, 4*1024*1024)
+	// NETCONF_GET lines may include small JSON payloads. Keep scanner limit generous.
+	scanner.Buffer(buf, 64*1024*1024)
 	debug := log.GetLevel() <= zerolog.DebugLevel
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "NETCONF_GET ") {
-			emitNetconfGetLog(line, log)
+			emitNetconfGetLog(line, snapshotPath, log, debug)
 			continue
 		}
 		if debug {
@@ -121,16 +123,14 @@ func scanNetconfOutput(r io.Reader, log zerolog.Logger) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		if debug {
-			log.Debug().Err(err).Msg("netconf stdout scan failed")
-		}
+		log.Warn().Err(err).Msg("netconf stdout scan failed")
 	}
 }
 
 func scanNetconfErrors(r io.Reader, log zerolog.Logger) {
 	scanner := bufio.NewScanner(r)
 	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner.Buffer(buf, 8*1024*1024)
 	debug := log.GetLevel() <= zerolog.DebugLevel
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -145,30 +145,48 @@ func scanNetconfErrors(r io.Reader, log zerolog.Logger) {
 	if err := scanner.Err(); err != nil {
 		if debug {
 			log.Debug().Err(err).Msg("netconf stderr scan failed")
+			return
 		}
+		log.Warn().Err(err).Msg("netconf stderr scan failed")
 	}
 }
 
-func emitNetconfGetLog(line string, log zerolog.Logger) {
+func emitNetconfGetLog(line, snapshotPath string, log zerolog.Logger, debug bool) {
 	rest := strings.TrimPrefix(line, "NETCONF_GET ")
 	parts := strings.SplitN(rest, " json=", 2)
-	if len(parts) != 2 {
-		log.Debug().Msg(line)
-		return
-	}
 	meta := strings.Fields(parts[0])
 	var user, ts string
+	var bytesStr, sha string
 	for _, f := range meta {
 		if strings.HasPrefix(f, "user=") {
 			user = strings.TrimPrefix(f, "user=")
 		} else if strings.HasPrefix(f, "ts=") {
 			ts = strings.TrimPrefix(f, "ts=")
+		} else if strings.HasPrefix(f, "bytes=") {
+			bytesStr = strings.TrimPrefix(f, "bytes=")
+		} else if strings.HasPrefix(f, "sha256=") {
+			sha = strings.TrimPrefix(f, "sha256=")
 		}
 	}
-	jsonStr := parts[1]
-	log.Info().
+
+	e := log.Info().
 		Str("user", user).
 		Str("ts", ts).
-		RawJSON("metrics", []byte(jsonStr)).
-		Msg("netconf_get")
+		Str("bytes", bytesStr).
+		Str("sha256", sha)
+
+	// Only log payload in debug.
+	// If C server included json=... keep it. Otherwise, read snapshot from file to show actual served state.
+	if debug {
+		if len(parts) == 2 {
+			e = e.RawJSON("metrics", []byte(parts[1]))
+		} else if snapshotPath != "" {
+			if b, err := os.ReadFile(snapshotPath); err == nil {
+				e = e.RawJSON("metrics", b)
+			} else {
+				e = e.Err(err)
+			}
+		}
+	}
+	e.Msg("netconf_get")
 }

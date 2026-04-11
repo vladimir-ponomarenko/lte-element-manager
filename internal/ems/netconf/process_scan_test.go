@@ -12,11 +12,11 @@ import (
 )
 
 func TestScanNetconfOutput_DebugGate(t *testing.T) {
-	in := "hello\nNETCONF_GET user=u ts=1 json={\"x\":1}\n"
+	in := "hello\nNETCONF_GET user=u ts=1 bytes=7 sha256=x json={\"x\":1}\n"
 
 	var buf bytes.Buffer
 	log := zerolog.New(&buf).Level(zerolog.InfoLevel)
-	scanNetconfOutput(strings.NewReader(in), log)
+	scanNetconfOutput(strings.NewReader(in), "", log)
 	out := buf.String()
 	if strings.Contains(out, "hello") {
 		t.Fatalf("unexpected debug output: %s", out)
@@ -27,7 +27,7 @@ func TestScanNetconfOutput_DebugGate(t *testing.T) {
 
 	buf.Reset()
 	log = zerolog.New(&buf).Level(zerolog.DebugLevel)
-	scanNetconfOutput(strings.NewReader("hello\n"), log)
+	scanNetconfOutput(strings.NewReader("hello\n"), "", log)
 	if !strings.Contains(buf.String(), "hello") {
 		t.Fatalf("expected debug output")
 	}
@@ -51,9 +51,9 @@ func TestScanNetconfErrors_ErrorClassification(t *testing.T) {
 func TestEmitNetconfGetLog_InvalidFormat(t *testing.T) {
 	var buf bytes.Buffer
 	log := zerolog.New(&buf).Level(zerolog.DebugLevel)
-	emitNetconfGetLog("NETCONF_GET user=u ts=1", log)
-	if !strings.Contains(buf.String(), "NETCONF_GET user=u ts=1") {
-		t.Fatalf("expected debug log to contain raw line: %s", buf.String())
+	emitNetconfGetLog("NETCONF_GET user=u ts=1 bytes=1 sha256=x", "", log, true)
+	if !strings.Contains(buf.String(), "netconf_get") {
+		t.Fatalf("expected netconf_get log: %s", buf.String())
 	}
 }
 

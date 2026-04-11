@@ -1,0 +1,39 @@
+module srsran-vendor-ext {
+  yang-version 1.1;
+
+  namespace "urn:vendor:srsran:ext";
+  prefix srs;
+
+  import _3gpp-common-managed-element {
+    prefix cme;
+  }
+
+  import ems-enb-metrics {
+    prefix ems;
+  }
+
+  organization "Sibsutis&Yadro";
+  description
+    "Vendor augmentation for srsRAN-specific telemetry.
+
+     This module augments the common managed element model with the full
+     srsRAN metrics payload (including per-UE and per-bearer details).";
+
+  revision 2026-04-15 {
+    description "Initial revision.";
+  }
+
+  augment "/cme:SubNetwork/cme:ManagedElement/cme:ENBFunction" {
+    description "Attach srsRAN vendor telemetry under ENBFunction.";
+
+    container srsran {
+      config false;
+      description "srsRAN vendor-specific operational data.";
+
+      container enb_metrics {
+        description "Full srsRAN metrics payload (vendor).";
+        uses ems:enb-metrics-body;
+      }
+    }
+  }
+}

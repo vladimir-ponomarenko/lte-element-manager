@@ -31,7 +31,7 @@ func (r *errReader) Read(p []byte) (int, error) {
 func TestScanNetconfOutput_LogsScannerErrInDebug(t *testing.T) {
 	var buf bytes.Buffer
 	log := zerolog.New(&buf).Level(zerolog.DebugLevel)
-	scanNetconfOutput(&errReader{}, log)
+	scanNetconfOutput(&errReader{}, "", log)
 	if !strings.Contains(buf.String(), "netconf stdout scan failed") {
 		t.Fatalf("expected scanner error log, got: %s", buf.String())
 	}

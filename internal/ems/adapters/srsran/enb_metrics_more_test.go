@@ -53,6 +53,13 @@ func TestENBMetricsReader_StopsOnContextCancelAfterTimeout(t *testing.T) {
 		if _, err := os.Stat(sock); err == nil {
 			break
 		}
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Skipf("socket bind not permitted in this environment: %v", err)
+			}
+		default:
+		}
 		if time.Now().After(deadline) {
 			t.Fatalf("socket not created")
 		}
