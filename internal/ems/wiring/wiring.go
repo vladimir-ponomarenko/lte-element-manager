@@ -2,6 +2,8 @@ package wiring
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -9,6 +11,8 @@ import (
 	"lte-element-manager/internal/ems/app"
 	"lte-element-manager/internal/ems/bus"
 	"lte-element-manager/internal/ems/config"
+	"lte-element-manager/internal/ems/configuration"
+	"lte-element-manager/internal/ems/configuration/srsranconf"
 	"lte-element-manager/internal/ems/domain"
 	"lte-element-manager/internal/ems/domain/nrm"
 	"lte-element-manager/internal/ems/fcaps/alarms"
@@ -21,6 +25,7 @@ import (
 	"lte-element-manager/internal/ems/service"
 	"lte-element-manager/internal/ems/services"
 	"lte-element-manager/internal/ems/telemetry"
+	"lte-element-manager/internal/ems/worker"
 	emserrors "lte-element-manager/internal/errors"
 )
 
@@ -41,6 +46,7 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	logNetconf := logging.WithComponent(c.log, c.cfg.Log, "netconf")
 	logFaults := logging.WithComponent(c.log, c.cfg.Log, "faults")
 	logPM := logging.WithComponent(c.log, c.cfg.Log, "pm")
+	logControl := logging.WithComponent(c.log, c.cfg.Log, "control")
 
 	b := bus.New(c.cfg.Bus.Buffer)
 	rawIn := make(chan domain.MetricSample, 200)
@@ -123,11 +129,16 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 					emserrors.WithSeverity(emserrors.SeverityCritical),
 				)
 			}
-			server := &netconf.ProcessServer{
-				Binary:        "/app/netconf-server",
-				Addr:          c.cfg.Netconf.Addr,
-				YangDir:       c.cfg.Netconf.YangDir,
+				controlURL := ""
+				if c.cfg.Control.Enabled && strings.TrimSpace(c.cfg.Control.Addr) != "" {
+					controlURL = controlLocalURL(c.cfg.Control.Addr)
+				}
+				server := &netconf.ProcessServer{
+					Binary:        "/app/netconf-server",
+					Addr:          c.cfg.Netconf.Addr,
+					YangDir:       c.cfg.Netconf.YangDir,
 				SnapshotPath:  c.cfg.Netconf.SnapshotPath,
+				ControlURL:    controlURL,
 				HostKey:       c.cfg.Netconf.SSH.HostKey,
 				AuthorizedKey: c.cfg.Netconf.SSH.AuthorizedKey,
 				Username:      c.cfg.Netconf.SSH.Username,
@@ -141,6 +152,83 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	} else {
 		// Mark NETCONF as up when disabled so overall health reflects UDS connectivity.
 		h.Up(health.ComponentNetconf)
+	}
+
+	if c.cfg.Control.Enabled {
+		timeout, err := time.ParseDuration(c.cfg.Control.Restart.Timeout)
+		if err != nil {
+			return nil, emserrors.Wrap(err, emserrors.ErrCodeConfig, "invalid control.restart.timeout",
+				emserrors.WithOp("wiring"),
+				emserrors.WithSeverity(emserrors.SeverityCritical),
+			)
+		}
+		targets := make(map[string]string, len(c.cfg.Control.Restart.Targets))
+		plans := make(map[string]worker.RestartPlan, len(c.cfg.Control.Restart.Targets))
+		var cfgStore *configuration.Store
+		for _, t := range c.cfg.Control.Restart.Targets {
+			container := strings.TrimSpace(t.Container)
+			if container == "" {
+				continue
+			}
+			serial := strings.TrimSpace(t.Serial)
+			if serial == "" && strings.TrimSpace(t.ENBConfigPath) != "" {
+				enbCfg, parseErr := srsranconf.ParseENB(strings.TrimSpace(t.ENBConfigPath))
+				if parseErr != nil {
+					return nil, emserrors.Wrap(parseErr, emserrors.ErrCodeConfig, "failed to read enb_config_path for restart target",
+						emserrors.WithOp("wiring"),
+						emserrors.WithSeverity(emserrors.SeverityCritical),
+					)
+				}
+				serial = strings.TrimSpace(enbCfg.Serial)
+			}
+			if serial == "" {
+				return nil, emserrors.New(emserrors.ErrCodeConfig, "restart target serial is empty (set serial or enb_config_path)",
+					emserrors.WithOp("wiring"),
+					emserrors.WithSeverity(emserrors.SeverityCritical),
+				)
+			}
+			targets[serial] = container
+
+			if cfgStore == nil && strings.TrimSpace(t.ENBConfigPath) != "" && strings.TrimSpace(t.RRConfigPath) != "" {
+				store, storeErr := configuration.NewStore(strings.TrimSpace(t.ENBConfigPath), strings.TrimSpace(t.RRConfigPath))
+				if storeErr != nil {
+					return nil, emserrors.Wrap(storeErr, emserrors.ErrCodeConfig, "failed to initialize configuration store",
+						emserrors.WithOp("wiring"),
+						emserrors.WithSeverity(emserrors.SeverityCritical),
+					)
+				}
+				cfgStore = store
+			}
+			delay := 5 * time.Second
+			if strings.TrimSpace(t.DelayAfterStart) != "" {
+				parsedDelay, parseErr := time.ParseDuration(t.DelayAfterStart)
+				if parseErr != nil {
+					return nil, emserrors.Wrap(parseErr, emserrors.ErrCodeConfig, "invalid control.restart.targets.delay_after_start",
+						emserrors.WithOp("wiring"),
+						emserrors.WithSeverity(emserrors.SeverityCritical),
+					)
+				}
+				delay = parsedDelay
+			}
+			plans[container] = worker.RestartPlan{
+				Primary:         container,
+				Dependents:      append([]string(nil), t.Dependents...),
+				DelayAfterStart: delay,
+			}
+		}
+		if len(targets) == 0 {
+			return nil, emserrors.New(emserrors.ErrCodeConfig, "control is enabled but no restart targets are configured",
+				emserrors.WithOp("wiring"),
+				emserrors.WithSeverity(emserrors.SeverityCritical),
+			)
+		}
+		sup := worker.NewDockerLifecycleSupervisor(c.cfg.Control.Restart.DockerSocket, timeout, logControl)
+		sup.SetPlans(plans)
+		runner.Add(services.NewConfigControl(c.cfg.Control.Addr, targets, sup, cfgStore, logControl))
+		logControl.Info().
+			Str("addr", c.cfg.Control.Addr).
+			Int("targets", len(targets)).
+			Msg("control api enabled")
 	}
 
 	return runner, nil

@@ -22,6 +22,8 @@ type Config struct {
 	NRM NRMConfig `yaml:"nrm"`
 	// PM controls performance management engine settings.
 	PM PMConfig `yaml:"pm"`
+	// Control configures control-plane APIs (configuration actions).
+	Control ControlConfig `yaml:"control"`
 }
 
 type ElementConfig struct {
@@ -92,6 +94,27 @@ type PMConfig struct {
 	ReportPeriod      string `yaml:"report_period"`
 }
 
+type ControlConfig struct {
+	Enabled bool           `yaml:"enabled"`
+	Addr    string         `yaml:"addr"`
+	Restart ControlRestart `yaml:"restart"`
+}
+
+type ControlRestart struct {
+	DockerSocket string                 `yaml:"docker_socket"`
+	Timeout      string                 `yaml:"timeout"`
+	Targets      []ControlRestartTarget `yaml:"targets"`
+}
+
+type ControlRestartTarget struct {
+	Serial          string   `yaml:"serial"`
+	Container       string   `yaml:"container"`
+	ENBConfigPath   string   `yaml:"enb_config_path"`
+	RRConfigPath    string   `yaml:"rr_config_path"`
+	Dependents      []string `yaml:"dependents"`
+	DelayAfterStart string   `yaml:"delay_after_start"`
+}
+
 func Default() Config {
 	return Config{
 		Element: ElementConfig{
@@ -132,6 +155,15 @@ func Default() Config {
 			Enabled:           false,
 			GranularityPeriod: "10s",
 			ReportPeriod:      "10s",
+		},
+		Control: ControlConfig{
+			Enabled: false,
+			Addr:    "0.0.0.0:18080",
+			Restart: ControlRestart{
+				DockerSocket: "/var/run/docker.sock",
+				Timeout:      "20s",
+				Targets:      nil,
+			},
 		},
 	}
 }
@@ -218,6 +250,15 @@ func applyDefaults(cfg *Config) {
 	if cfg.PM.ReportPeriod == "" {
 		cfg.PM.ReportPeriod = def.PM.ReportPeriod
 	}
+	if cfg.Control.Addr == "" {
+		cfg.Control.Addr = def.Control.Addr
+	}
+	if cfg.Control.Restart.DockerSocket == "" {
+		cfg.Control.Restart.DockerSocket = def.Control.Restart.DockerSocket
+	}
+	if cfg.Control.Restart.Timeout == "" {
+		cfg.Control.Restart.Timeout = def.Control.Restart.Timeout
+	}
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -289,6 +330,18 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := envString("EMS_PM_REPORT_PERIOD", "PM_REPORT_PERIOD"); v != "" {
 		cfg.PM.ReportPeriod = v
+	}
+	if v, ok := envBool("EMS_CONTROL_ENABLED", "CONTROL_ENABLED"); ok {
+		cfg.Control.Enabled = v
+	}
+	if v := envString("EMS_CONTROL_ADDR", "CONTROL_ADDR"); v != "" {
+		cfg.Control.Addr = v
+	}
+	if v := envString("EMS_CONTROL_DOCKER_SOCKET", "CONTROL_DOCKER_SOCKET"); v != "" {
+		cfg.Control.Restart.DockerSocket = v
+	}
+	if v := envString("EMS_CONTROL_RESTART_TIMEOUT", "CONTROL_RESTART_TIMEOUT"); v != "" {
+		cfg.Control.Restart.Timeout = v
 	}
 }
 

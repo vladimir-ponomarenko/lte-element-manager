@@ -1,3 +1,5 @@
+//go:build !netconf || !cgo
+
 package netconf
 
 // Enabled reports whether NETCONF support is built in.

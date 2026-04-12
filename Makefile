@@ -1,8 +1,8 @@
 LIBYANG_REPO        := https://github.com/CESNET/libyang.git
 LIBNETCONF2_REPO    := https://github.com/CESNET/libnetconf2.git
 
-LIBYANG_REF         ?= master
-LIBNETCONF2_REF     ?= master
+LIBYANG_REF         ?= v4.2.2
+LIBNETCONF2_REF     ?= v4.1.2
 
 THIRD_PARTY_DIR     := $(CURDIR)/third_party
 BUILD_DIR           := $(CURDIR)/.build
@@ -30,13 +30,14 @@ LIBNETCONF2_CMAKE_FLAGS := \
 
 .PHONY: all bootstrap deps clone clone-libyang clone-libnetconf2 \
 	update-libyang update-libnetconf2 libyang libnetconf2 clean distclean \
-	build build-netconf build-netconf-server run test cover
+	build build-netconf build-netconf-server netconf-client run test cover
 
-all: libnetconf2 libyang
+all: libyang libnetconf2
 
 
 build:
 	$(GO) build -o ems-agent ./cmd/ems-agent
+	$(MAKE) build-netconf-server
 
 test:
 	CGO_ENABLED=0 $(GO) test ./...
@@ -59,7 +60,7 @@ build-netconf: libnetconf2 libyang
 
 build-netconf-server: libnetconf2 libyang
 	$(CC) -O2 -o netconf-server ./cmd/netconf-server/server.c \
-		-I$(PREFIX_DIR)/include -L$(PREFIX_DIR)/lib -lnetconf2 -lyang -lssh -lssl -lcrypto -lpthread
+		-I$(PREFIX_DIR)/include -L$(PREFIX_DIR)/lib -lnetconf2 -lyang -lssh -lssl -lcrypto -lcurl -lpthread
 
 run: build
 	./ems-agent
@@ -117,6 +118,14 @@ libnetconf2: libyang $(LIBNETCONF2_BUILD)/CMakeCache.txt
 
 clean:
 	rm -rf $(BUILD_DIR)
+	rm -rf .artifacts
+	rm -f ems-agent netconf-server $(PREFIX_DIR)/bin/netconf-client
 
 distclean: clean
 	rm -rf $(THIRD_PARTY_DIR) $(PREFIX_DIR)
+
+# ? Build and install NETCONF client for tests.
+netconf-client: libnetconf2
+	@mkdir -p "$(PREFIX_DIR)/bin"
+	$(CC) -O2 -o "$(PREFIX_DIR)/bin/netconf-client" ./cmd/netconf-client/netconf-client.c \
+		-I"$(PREFIX_DIR)/include" -L"$(PREFIX_DIR)/lib" -lnetconf2 -lyang -lssh -lssl -lcrypto -lpthread

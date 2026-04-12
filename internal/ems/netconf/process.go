@@ -21,6 +21,7 @@ type ProcessServer struct {
 	Addr          string
 	YangDir       string
 	SnapshotPath  string
+	ControlURL    string
 	HostKey       string
 	AuthorizedKey string
 	Username      string
@@ -48,6 +49,9 @@ func (p *ProcessServer) Run(ctx context.Context) error {
 		"-hostkey", p.HostKey,
 		"-authorized-key", p.AuthorizedKey,
 		"-user", p.Username,
+	}
+	if strings.TrimSpace(p.ControlURL) != "" {
+		args = append(args, "-control", strings.TrimSpace(p.ControlURL))
 	}
 
 	cmd := execCommand(p.Binary, args...)

@@ -12,7 +12,7 @@ module srsran-vendor-ext {
     prefix ems;
   }
 
-  organization "Sibsutis&Yadro";
+  organization "SibSUTIS & YADRO";
   description
     "Vendor augmentation for srsRAN-specific telemetry.
 
@@ -25,6 +25,24 @@ module srsran-vendor-ext {
 
   augment "/cme:SubNetwork/cme:ManagedElement/cme:ENBFunction" {
     description "Attach srsRAN vendor telemetry under ENBFunction.";
+
+    leaf enb_serial {
+      type string {
+        length "1..128";
+      }
+      config true;
+      description "Element serial identifier.";
+    }
+
+    leaf tx_gain {
+      type decimal64 {
+        fraction-digits 3;
+        range "0..120";
+      }
+      units "dB";
+      config true;
+      description "Configured TX gain in dB.";
+    }
 
     container srsran {
       config false;

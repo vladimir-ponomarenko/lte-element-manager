@@ -39,3 +39,26 @@ netconf:
     hostkey: ""
     authorized_key: ""
     username: admin
+
+nrm:
+  subnetwork: srsRAN
+  managed_element: enb1
+  enb_function_id: "1"
+
+pm:
+  enabled: false
+  granularity_period: 10s
+  report_period: 10s
+
+control:
+  enabled: false
+  addr: 0.0.0.0:18080
+  restart:
+    docker_socket: /var/run/docker.sock
+    timeout: 20s
+    targets: []
+    # target example:
+    # targets:
+    #   - container: ENB-1
+    #     enb_config_path: /app/element-config/enb.conf
+    #     rr_config_path: /app/element-config/rr.conf

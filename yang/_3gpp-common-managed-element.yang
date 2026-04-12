@@ -4,7 +4,7 @@ module _3gpp-common-managed-element {
   namespace "urn:3gpp:sa5:_3gpp-common-managed-element";
   prefix cme;
 
-  organization "Sibsutis&Yadro";
+  organization "SibSUTIS & YADRO";
   description
     "Common Managed Element model.
 
@@ -76,6 +76,29 @@ module _3gpp-common-managed-element {
           config true;
         }
 
+        leaf mcc {
+          type string {
+            pattern '[0-9]{3}';
+          }
+          config true;
+          description "Mobile Country Code.";
+        }
+
+        leaf mnc {
+          type string {
+            pattern '[0-9]{2,3}';
+          }
+          config true;
+          description "Mobile Network Code.";
+        }
+
+        leaf n_prb {
+          type uint16;
+          must ". = 6 or . = 15 or . = 25 or . = 50 or . = 75 or . = 100";
+          config true;
+          description "Cell bandwidth in PRBs.";
+        }
+
         list EUtranCell {
           key "id";
           description "E-UTRAN cell managed object.";
@@ -83,6 +106,22 @@ module _3gpp-common-managed-element {
           leaf id {
             type id-string;
             config true;
+          }
+
+          leaf dl_earfcn {
+            type uint32 {
+              range "0..262143";
+            }
+            config true;
+            description "Configured LTE downlink EARFCN.";
+          }
+
+          leaf pci {
+            type uint16 {
+              range "0..503";
+            }
+            config true;
+            description "Physical Cell Identifier.";
           }
 
           uses measurements-group;

@@ -1,4 +1,4 @@
-//go:build netconf
+//go:build netconf && cgo
 
 package netconf
 
