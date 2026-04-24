@@ -44,6 +44,219 @@ module srsran-vendor-ext {
       description "Configured TX gain in dB.";
     }
 
+    leaf rx_gain {
+      type decimal64 {
+        fraction-digits 3;
+        range "0..120";
+      }
+      units "dB";
+      config true;
+      description "Configured RX gain in dB.";
+    }
+
+    leaf time_adv_nsamples {
+      type string {
+        length "1..32";
+      }
+      config true;
+      description "RF time advance in samples (or 'auto').";
+    }
+
+    leaf device_name {
+      type string {
+        length "0..128";
+      }
+      config true;
+      description "RF device driver.";
+    }
+
+    leaf device_args {
+      type string {
+        length "0..512";
+      }
+      config true;
+      description "RF device arguments.";
+    }
+
+    container scheduler {
+      config true;
+      description "Scheduler tuning knobs.";
+
+      leaf sched_policy {
+        type enumeration {
+          enum time_rr;
+          enum time_pf;
+        }
+        config true;
+      }
+
+      leaf pdsch_max_mcs {
+        type int16 {
+          range "-1..28";
+        }
+        config true;
+      }
+
+      leaf pusch_max_mcs {
+        type int16 {
+          range "-1..28";
+        }
+        config true;
+      }
+
+      leaf target_bler {
+        type decimal64 {
+          fraction-digits 6;
+          range "0..1";
+        }
+        config true;
+      }
+
+      leaf min_nof_ctrl_symbols {
+        type int8 {
+          range "1..3";
+        }
+        config true;
+      }
+
+      leaf max_nof_ctrl_symbols {
+        type int8 {
+          range "1..3";
+        }
+        config true;
+      }
+    }
+
+    container sib {
+      config true;
+      description "Selected SIB parameters.";
+
+      leaf q_rx_lev_min {
+        type int16 {
+          range "-140..-44";
+        }
+        config true;
+      }
+
+      leaf cell_barred {
+        type enumeration {
+          enum NotBarred;
+          enum Barred;
+        }
+        config true;
+      }
+
+      leaf num_ra_preambles {
+        type uint8 {
+          range "4..64";
+        }
+        config true;
+      }
+
+      leaf preamble_init_rx_target_pwr {
+        type int16 {
+          range "-120..0";
+        }
+        config true;
+      }
+
+      leaf pwr_ramping_step {
+        type uint8 {
+          range "0..10";
+        }
+        config true;
+      }
+
+      leaf reference_signal_power {
+        type int16 {
+          range "-60..50";
+        }
+        config true;
+      }
+
+      leaf p0_nominal_pusch {
+        type int16 {
+          range "-126..24";
+        }
+        config true;
+      }
+
+      leaf p0_nominal_pucch {
+        type int16 {
+          range "-127..-96";
+        }
+        config true;
+      }
+
+      leaf alpha {
+        type decimal64 {
+          fraction-digits 3;
+          range "0..1";
+        }
+        config true;
+      }
+
+      leaf default_paging_cycle {
+        type uint16 {
+          range "32|64|128|256";
+        }
+        config true;
+      }
+
+      container ue_timers_and_constants {
+        config true;
+        description "Selected RRC timers/constants.";
+
+        leaf t300 { type uint16 { range "0..20000"; } config true; }
+        leaf t301 { type uint16 { range "0..20000"; } config true; }
+        leaf t310 { type uint16 { range "0..20000"; } config true; }
+        leaf n310 { type uint16 { range "0..20"; } config true; }
+        leaf t311 { type uint16 { range "0..30000"; } config true; }
+      }
+    }
+
+    list qci_profiles {
+      key "qci";
+      config true;
+      description "Bearer/QCI tuning (maps to rb.conf qci_config list).";
+
+      leaf qci {
+        type uint8 { range "1..9"; }
+        config true;
+      }
+
+      leaf discard_timer { type int32; config true; }
+      leaf pdcp_sn_size { type uint8; config true; }
+      leaf t_poll_retx { type uint16; config true; }
+      leaf max_retx_thresh { type uint16; config true; }
+      leaf t_reordering { type uint16; config true; }
+      leaf priority { type uint8; config true; }
+    }
+
+    container expert {
+      config true;
+      description "Expert knobs (srsRAN enb.conf [expert]).";
+
+      leaf pusch_max_its { type int16 { range "0..20"; } config true; }
+      leaf nr_pusch_max_its { type int16 { range "0..50"; } config true; }
+      leaf pusch_8bit_decoder { type boolean; config true; }
+      leaf nof_phy_threads { type int16 { range "1..16"; } config true; }
+      leaf metrics_period_secs { type int16 { range "1..60"; } config true; }
+      leaf tx_amplitude { type decimal64 { fraction-digits 6; range "0..1"; } config true; }
+      leaf rrc_inactivity_timer { type uint32 { range "0..600000"; } config true; }
+      leaf rlf_release_timer_ms { type uint32 { range "0..600000"; } config true; }
+      leaf eea_pref_list { type string { length "1..128"; } config true; }
+      leaf eia_pref_list { type string { length "1..128"; } config true; }
+      leaf gtpu_tunnel_timeout { type uint32 { range "0..600000"; } config true; }
+      leaf s1_setup_max_retries { type int32; config true; }
+      leaf s1_connect_timer { type uint32 { range "0..600000"; } config true; }
+      leaf rx_gain_offset { type decimal64 { fraction-digits 6; } config true; }
+      leaf use_cedron_f_est_alg { type boolean; config true; }
+      leaf rlf_min_ul_snr_estim { type decimal64 { fraction-digits 6; } config true; }
+      leaf max_mac_dl_kos { type uint32; config true; }
+      leaf max_mac_ul_kos { type uint32; config true; }
+    }
+
     container srsran {
       config false;
       description "srsRAN vendor-specific operational data.";

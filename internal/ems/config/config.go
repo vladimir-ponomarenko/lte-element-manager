@@ -111,6 +111,8 @@ type ControlRestartTarget struct {
 	Container       string   `yaml:"container"`
 	ENBConfigPath   string   `yaml:"enb_config_path"`
 	RRConfigPath    string   `yaml:"rr_config_path"`
+	SIBConfigPath   string   `yaml:"sib_config_path"`
+	RBConfigPath    string   `yaml:"rb_config_path"`
 	Dependents      []string `yaml:"dependents"`
 	DelayAfterStart string   `yaml:"delay_after_start"`
 }

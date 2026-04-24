@@ -189,8 +189,17 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 			}
 			targets[serial] = container
 
-			if cfgStore == nil && strings.TrimSpace(t.ENBConfigPath) != "" && strings.TrimSpace(t.RRConfigPath) != "" {
-				store, storeErr := configuration.NewStore(strings.TrimSpace(t.ENBConfigPath), strings.TrimSpace(t.RRConfigPath))
+			if cfgStore == nil &&
+				strings.TrimSpace(t.ENBConfigPath) != "" &&
+				strings.TrimSpace(t.RRConfigPath) != "" &&
+				strings.TrimSpace(t.SIBConfigPath) != "" &&
+				strings.TrimSpace(t.RBConfigPath) != "" {
+				store, storeErr := configuration.NewStore(
+					strings.TrimSpace(t.ENBConfigPath),
+					strings.TrimSpace(t.RRConfigPath),
+					strings.TrimSpace(t.SIBConfigPath),
+					strings.TrimSpace(t.RBConfigPath),
+				)
 				if storeErr != nil {
 					return nil, emserrors.Wrap(storeErr, emserrors.ErrCodeConfig, "failed to initialize configuration store",
 						emserrors.WithOp("wiring"),

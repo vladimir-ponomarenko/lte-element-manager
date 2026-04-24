@@ -4,6 +4,10 @@ module _3gpp-common-managed-element {
   namespace "urn:3gpp:sa5:_3gpp-common-managed-element";
   prefix cme;
 
+  import ietf-inet-types {
+    prefix inet;
+  }
+
   organization "SibSUTIS & YADRO";
   description
     "Common Managed Element model.
@@ -76,6 +80,15 @@ module _3gpp-common-managed-element {
           config true;
         }
 
+        leaf enb_id {
+          type string {
+            length "1..64";
+          }
+          config true;
+          description
+            "Global eNB identifier.";
+        }
+
         leaf mcc {
           type string {
             pattern '[0-9]{3}';
@@ -99,6 +112,40 @@ module _3gpp-common-managed-element {
           description "Cell bandwidth in PRBs.";
         }
 
+        leaf mme_addr {
+          type inet:ip-address;
+          config true;
+          description "MME address for S1-C.";
+        }
+
+        leaf gtp_bind_addr {
+          type inet:ip-address;
+          config true;
+          description "Local bind address for S1-U GTP-U.";
+        }
+
+        leaf s1c_bind_addr {
+          type inet:ip-address;
+          config true;
+          description "Local bind address for S1-C S1AP.";
+        }
+
+        leaf s1c_bind_port {
+          type uint16 {
+            range "0..65535";
+          }
+          config true;
+          description "Local bind port for S1-C (0 means ephemeral).";
+        }
+
+        leaf tm {
+          type uint8 {
+            range "1..4";
+          }
+          config true;
+          description "Transmission mode (TM1..TM4).";
+        }
+
         list EUtranCell {
           key "id";
           description "E-UTRAN cell managed object.";
@@ -106,6 +153,14 @@ module _3gpp-common-managed-element {
           leaf id {
             type id-string;
             config true;
+          }
+
+          leaf tac {
+            type string {
+              length "1..16";
+            }
+            config true;
+            description "Tracking Area Code (e.g. 0x0007).";
           }
 
           leaf dl_earfcn {
@@ -122,6 +177,30 @@ module _3gpp-common-managed-element {
             }
             config true;
             description "Physical Cell Identifier.";
+          }
+
+          leaf ho_active {
+            type boolean;
+            config true;
+            description "Enable/disable handover logic.";
+          }
+
+          leaf a3_offset {
+            type int16;
+            config true;
+            description "Event A3 offset (dB).";
+          }
+
+          leaf time_to_trigger {
+            type uint16;
+            config true;
+            description "Event A3 time-to-trigger (ms).";
+          }
+
+          leaf hysteresis {
+            type int16;
+            config true;
+            description "Measurement reporting hysteresis (dB).";
           }
 
           uses measurements-group;
