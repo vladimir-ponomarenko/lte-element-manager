@@ -310,27 +310,37 @@ func ParseRR(path string) (RRConfig, error) {
 
 		switch key {
 		case "cell_id":
-			out.CellID = val
+			if out.CellID == "" {
+				out.CellID = val
+			}
 		case "tac":
-			out.TAC = val
+			if out.TAC == "" {
+				out.TAC = val
+			}
 		case "dl_earfcn":
-			if v, parseErr := strconv.ParseUint(val, 10, 32); parseErr == nil {
-				out.DLEARFCN = uint32(v)
-				gotEARFCN = true
+			if !gotEARFCN {
+				if v, parseErr := strconv.ParseUint(val, 10, 32); parseErr == nil {
+					out.DLEARFCN = uint32(v)
+					gotEARFCN = true
+				}
 			}
 		case "pci":
-			if v, parseErr := strconv.ParseUint(val, 10, 32); parseErr == nil {
-				out.PCI = uint32(v)
-				gotPCI = true
+			if !gotPCI {
+				if v, parseErr := strconv.ParseUint(val, 10, 32); parseErr == nil {
+					out.PCI = uint32(v)
+					gotPCI = true
+				}
 			}
 		case "ho_active":
-			switch strings.ToLower(val) {
-			case "true":
-				v := true
-				out.HOActive = &v
-			case "false":
-				v := false
-				out.HOActive = &v
+			if out.HOActive == nil {
+				switch strings.ToLower(val) {
+				case "true":
+					v := true
+					out.HOActive = &v
+				case "false":
+					v := false
+					out.HOActive = &v
+				}
 			}
 		case "a3_offset":
 			if iv, parseErr := strconv.ParseInt(val, 10, 32); parseErr == nil {

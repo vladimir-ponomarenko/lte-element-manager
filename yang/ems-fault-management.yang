@@ -1,0 +1,148 @@
+module ems-fault-management {
+  yang-version 1.1;
+
+  namespace "urn:ems:fault-management";
+  prefix fm;
+
+  import _3gpp-common-managed-element {
+    prefix cme;
+  }
+
+  organization "SibSUTIS & YADRO";
+  description
+    "Fault Management active alarm list exposed by the EMS.
+
+     The model follows the 3GPP/X.733 alarm information set used by NMS
+     integrations: active alarms are operational state and are not editable.";
+
+  revision 2026-05-06 {
+    description "Initial Active Alarm List revision.";
+  }
+
+  typedef event-type {
+    type enumeration {
+      enum CommunicationsAlarm;
+      enum ProcessingErrorAlarm;
+      enum QualityOfServiceAlarm;
+      enum EquipmentAlarm;
+    }
+  }
+
+  typedef perceived-severity {
+    type enumeration {
+      enum CRITICAL;
+      enum MAJOR;
+      enum MINOR;
+      enum WARNING;
+      enum CLEARED;
+    }
+  }
+
+  typedef alarm-status {
+    type enumeration {
+      enum active;
+      enum cleared;
+    }
+  }
+
+  grouping alarm-common {
+    leaf alarm_id {
+      type string {
+        length "1..128";
+      }
+      description "Unique identifier of the alarm instance.";
+    }
+
+    leaf managed_object_instance {
+      type string {
+        length "1..512";
+      }
+      description "Distinguished name of the failed managed object.";
+    }
+
+    leaf event_type {
+      type event-type;
+      description "X.733 event type.";
+    }
+
+    leaf probable_cause {
+      type string {
+        length "1..128";
+      }
+      description "Formal probable cause.";
+    }
+
+    leaf perceived_severity {
+      type perceived-severity;
+      description "X.733 perceived severity.";
+    }
+
+    leaf specific_problem {
+      type string {
+        length "1..512";
+      }
+      description "Human-readable specific problem.";
+    }
+
+    leaf occurrence_count {
+      type uint64;
+      description "Number of deduplicated occurrences.";
+    }
+  }
+
+  augment "/cme:SubNetwork/cme:ManagedElement/cme:ENBFunction" {
+    container fault_management {
+      config false;
+      description "Fault Management operational state.";
+
+      list active_alarm {
+        key "alarm_id";
+        description "Active Alarm List (AAL). Cleared alarms are not retained here.";
+
+        uses alarm-common;
+
+        leaf first_event_time {
+          type string {
+            length "1..64";
+          }
+          description "RFC3339 timestamp of the first occurrence.";
+        }
+
+        leaf last_event_time {
+          type string {
+            length "1..64";
+          }
+          description "RFC3339 timestamp of the most recent occurrence.";
+        }
+      }
+    }
+  }
+
+  notification alarm-notification {
+    description
+      "Push notification emitted when an alarm is raised or cleared.
+       It mirrors the Active Alarm List information set and adds event_time
+       plus alarm_status for lifecycle transitions.";
+
+    uses alarm-common;
+
+    leaf event_time {
+      type string {
+        length "1..64";
+      }
+      description "RFC3339 timestamp of this lifecycle event.";
+    }
+
+    leaf alarm_status {
+      type alarm-status;
+      description "Alarm lifecycle transition status.";
+    }
+
+    leaf component {
+      type string {
+        length "1..128";
+      }
+      description "Internal EMS component that produced the alarm event.";
+    }
+  }
+}

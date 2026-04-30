@@ -43,6 +43,13 @@ cell_list =
   {
     pci = 2;
     dl_earfcn = 3350;
+    meas_cell_list =
+    (
+      {
+        dl_earfcn = 6300;
+        pci = 99;
+      }
+    );
   }
 );
 `

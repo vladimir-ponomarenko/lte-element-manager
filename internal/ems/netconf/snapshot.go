@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"lte-element-manager/internal/ems/domain/nrm"
 	domainpm "lte-element-manager/internal/ems/domain/pm"
+	"lte-element-manager/internal/ems/fcaps/alarms"
 	"lte-element-manager/internal/ems/fcaps/pm"
 	emserrors "lte-element-manager/internal/errors"
 )
@@ -38,6 +40,7 @@ type enbFunction struct {
 	ID         string        `json:"id"`
 	EUtranCell []eUtranCell  `json:"EUtranCell,omitempty"`
 	SRSRAN     *srsranVendor `json:"srsran-vendor-ext:srsran,omitempty"`
+	Faults     *faultState   `json:"ems-fault-management:fault_management,omitempty"`
 }
 
 type eUtranCell struct {
@@ -56,7 +59,23 @@ type srsranVendor struct {
 	EnbMetrics json.RawMessage `json:"enb_metrics,omitempty"`
 }
 
-func BuildCombinedSnapshot(cfg SnapshotConfig, reg *nrm.Registry, pmStore *pm.Store, normalizedLegacy string) ([]byte, error) {
+type faultState struct {
+	ActiveAlarm []activeAlarm `json:"active_alarm,omitempty"`
+}
+
+type activeAlarm struct {
+	AlarmID               string `json:"alarm_id"`
+	ManagedObjectInstance string `json:"managed_object_instance,omitempty"`
+	EventType             string `json:"event_type,omitempty"`
+	ProbableCause         string `json:"probable_cause,omitempty"`
+	PerceivedSeverity     string `json:"perceived_severity,omitempty"`
+	SpecificProblem       string `json:"specific_problem,omitempty"`
+	FirstEventTime        string `json:"first_event_time,omitempty"`
+	LastEventTime         string `json:"last_event_time,omitempty"`
+	OccurrenceCount       string `json:"occurrence_count,omitempty"`
+}
+
+func BuildCombinedSnapshot(cfg SnapshotConfig, reg *nrm.Registry, pmStore *pm.Store, normalizedLegacy string, alarmStores ...*alarms.Store) ([]byte, error) {
 	if cfg.SubNetwork == "" || cfg.ManagedElement == "" || cfg.ENBFunctionID == "" {
 		return nil, emserrors.New(emserrors.ErrCodeConfig, "snapshot config is incomplete",
 			emserrors.WithOp("netconf.snapshot"),
@@ -77,6 +96,9 @@ func BuildCombinedSnapshot(cfg SnapshotConfig, reg *nrm.Registry, pmStore *pm.St
 	fn := enbFunction{
 		ID:     cfg.ENBFunctionID,
 		SRSRAN: &srsranVendor{EnbMetrics: legacy},
+	}
+	if len(alarmStores) > 0 {
+		fn.Faults = buildFaultState(alarmStores[0])
 	}
 
 	cells := reg.EUtranCells()
@@ -113,6 +135,31 @@ func BuildCombinedSnapshot(cfg SnapshotConfig, reg *nrm.Registry, pmStore *pm.St
 		)
 	}
 	return out, nil
+}
+
+func buildFaultState(store *alarms.Store) *faultState {
+	if store == nil {
+		return nil
+	}
+	records := store.Active()
+	if len(records) == 0 {
+		return nil
+	}
+	out := &faultState{ActiveAlarm: make([]activeAlarm, 0, len(records))}
+	for _, rec := range records {
+		out.ActiveAlarm = append(out.ActiveAlarm, activeAlarm{
+			AlarmID:               rec.AlarmID,
+			ManagedObjectInstance: rec.ManagedObjectInstance,
+			EventType:             rec.EventType,
+			ProbableCause:         rec.ProbableCause,
+			PerceivedSeverity:     rec.PerceivedSeverity,
+			SpecificProblem:       rec.SpecificProblem,
+			FirstEventTime:        rec.FirstSeen.UTC().Format(time.RFC3339Nano),
+			LastEventTime:         rec.LastSeen.UTC().Format(time.RFC3339Nano),
+			OccurrenceCount:       strconv.FormatUint(rec.Count, 10),
+		})
+	}
+	return out
 }
 
 func latestReport(store *pm.Store) (pm.Report, bool) {

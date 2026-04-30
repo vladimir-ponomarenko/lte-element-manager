@@ -67,6 +67,8 @@ type NetconfConfig struct {
 	Transport string `yaml:"transport"`
 	// SnapshotPath is the file path from which NETCONF reads the latest metrics.
 	SnapshotPath string `yaml:"snapshot_path"`
+	// DatastoreDir stores generated NETCONF running/candidate YANG-JSON artifacts.
+	DatastoreDir string `yaml:"datastore_dir"`
 	// YangDir is the directory containing YANG models to load.
 	YangDir string `yaml:"yang_dir"`
 	// SSH settings (used when transport is ssh).
@@ -141,6 +143,7 @@ func Default() Config {
 			Addr:         "0.0.0.0:8300",
 			Transport:    "tcp",
 			SnapshotPath: "",
+			DatastoreDir: "",
 			YangDir:      "yang",
 			SSH: NetconfSSHConfig{
 				HostKey:       "",

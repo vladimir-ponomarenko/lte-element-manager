@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <nc_client.h>
@@ -34,8 +35,14 @@ usage(FILE *out)
             "  get [xpath-filter]\n"
             "  get-config [running|candidate|startup] [xpath-filter]\n"
             "  edit-config <running|candidate|startup> <xml-file>\n"
+            "  validate [running|candidate|startup]\n"
+            "  validate-config <xml-file>\n"
             "  commit\n"
-            "  discard-changes\n");
+            "  discard-changes\n"
+            "  lock <running|candidate>\n"
+            "  unlock <running|candidate>\n"
+            "  subscribe [duration-sec]\n"
+            "  sequence <xml-file|-> [commit|discard|no-commit]\n");
 }
 
 static NC_DATASTORE
@@ -136,6 +143,22 @@ read_stdin_all(void)
 }
 
 static int
+tree_has_rpc_error(const struct lyd_node *node)
+{
+    const struct lyd_node *it = NULL;
+
+    LY_LIST_FOR(node, it) {
+        if (!strcmp(LYD_NAME(it), "rpc-error")) {
+            return 1;
+        }
+        if (lyd_child(it) && tree_has_rpc_error(lyd_child(it))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 send_and_print(struct nc_session *session, struct nc_rpc *rpc, int timeout_ms)
 {
     int r;
@@ -173,11 +196,173 @@ send_and_print(struct nc_session *session, struct nc_rpc *rpc, int timeout_ms)
         rc = 1;
         goto cleanup;
     }
+    if (tree_has_rpc_error(envp) || tree_has_rpc_error(op)) {
+        rc = 1;
+    }
 
 cleanup:
     lyd_free_all(envp);
     lyd_free_all(op);
     return rc;
+}
+
+static int
+send_named_rpc(struct nc_session *session, struct nc_rpc *rpc, int timeout_ms, const char *name)
+{
+    int rc;
+
+    if (!rpc) {
+        fprintf(stderr, "%s: failed to create RPC\n", name ? name : "rpc");
+        return 1;
+    }
+    if (name && name[0]) {
+        printf("[netconf-client] %s\n", name);
+    }
+    rc = send_and_print(session, rpc, timeout_ms);
+    nc_rpc_free(rpc);
+    return rc;
+}
+
+static int
+run_sequence(struct nc_session *session, const char *xml_path, const char *action, int timeout_ms)
+{
+    int rc = 0;
+    int first_rc = 0;
+    int locked_candidate = 0;
+    int locked_running = 0;
+    char *edit_content = NULL;
+    struct nc_rpc *rpc = NULL;
+
+    if (!action || !action[0]) {
+        action = "commit";
+    }
+    if (strcmp(action, "commit") && strcmp(action, "discard") && strcmp(action, "no-commit")) {
+        fprintf(stderr, "sequence action must be one of: commit, discard, no-commit\n");
+        return 2;
+    }
+
+    if (!strcmp(xml_path, "-")) {
+        edit_content = read_stdin_all();
+    } else {
+        edit_content = read_file(xml_path);
+    }
+    if (!edit_content) {
+        return 1;
+    }
+
+    rc = send_named_rpc(session, nc_rpc_lock(NC_DATASTORE_CANDIDATE), timeout_ms, "lock candidate");
+    if (rc) {
+        first_rc = rc;
+        goto cleanup;
+    }
+    locked_candidate = 1;
+
+    if (!strcmp(action, "commit")) {
+        rc = send_named_rpc(session, nc_rpc_lock(NC_DATASTORE_RUNNING), timeout_ms, "lock running");
+        if (rc && !first_rc) {
+            first_rc = rc;
+        }
+        if (rc) {
+            goto cleanup;
+        }
+        locked_running = 1;
+    }
+
+    rpc = nc_rpc_edit(NC_DATASTORE_CANDIDATE, NC_RPC_EDIT_DFLTOP_UNKNOWN, NC_RPC_EDIT_TESTOPT_UNKNOWN,
+            NC_RPC_EDIT_ERROPT_UNKNOWN, edit_content, NC_PARAMTYPE_CONST);
+    rc = send_named_rpc(session, rpc, timeout_ms, "edit-config candidate");
+    rpc = NULL;
+    if (rc && !first_rc) {
+        first_rc = rc;
+    }
+    if (rc) {
+        goto cleanup;
+    }
+
+    rc = send_named_rpc(session, nc_rpc_validate(NC_DATASTORE_CANDIDATE, NULL, NC_PARAMTYPE_CONST), timeout_ms,
+            "validate candidate");
+    if (rc && !first_rc) {
+        first_rc = rc;
+    }
+    if (rc) {
+        goto cleanup;
+    }
+
+    if (!strcmp(action, "commit")) {
+        rc = send_named_rpc(session, nc_rpc_commit(0, 0, NULL, NULL, NC_PARAMTYPE_CONST), timeout_ms, "commit");
+    } else if (!strcmp(action, "discard")) {
+        rc = send_named_rpc(session, nc_rpc_discard(), timeout_ms, "discard-changes");
+    } else {
+        rc = 0;
+    }
+    if (rc && !first_rc) {
+        first_rc = rc;
+    }
+
+cleanup:
+    if (locked_running) {
+        rc = send_named_rpc(session, nc_rpc_unlock(NC_DATASTORE_RUNNING), timeout_ms, "unlock running");
+        if (rc && !first_rc) {
+            first_rc = rc;
+        }
+    }
+    if (locked_candidate) {
+        rc = send_named_rpc(session, nc_rpc_unlock(NC_DATASTORE_CANDIDATE), timeout_ms, "unlock candidate");
+        if (rc && !first_rc) {
+            first_rc = rc;
+        }
+    }
+    free(edit_content);
+    return first_rc;
+}
+
+static int
+run_subscribe(struct nc_session *session, int duration_sec, int timeout_ms)
+{
+    int rc;
+    time_t end = 0;
+
+    if (duration_sec > 0) {
+        end = time(NULL) + duration_sec;
+    }
+
+    rc = send_named_rpc(session, nc_rpc_subscribe(NULL, NULL, NULL, NULL, NC_PARAMTYPE_CONST), timeout_ms,
+            "create-subscription");
+    if (rc) {
+        return rc;
+    }
+
+    while (duration_sec <= 0 || time(NULL) < end) {
+        struct lyd_node *envp = NULL, *op = NULL;
+        NC_MSG_TYPE msg = nc_recv_notif(session, 1000, &envp, &op);
+        if (msg == NC_MSG_WOULDBLOCK) {
+            continue;
+        }
+        if (msg == NC_MSG_ERROR) {
+            fprintf(stderr, "Failed to receive notification\n");
+            lyd_free_all(envp);
+            lyd_free_all(op);
+            return 1;
+        }
+        if (msg == NC_MSG_NOTIF) {
+            if (op && lyd_print_file(stdout, op, LYD_XML, 0)) {
+                fprintf(stderr, "Failed to print notification data\n");
+                lyd_free_all(envp);
+                lyd_free_all(op);
+                return 1;
+            }
+            if (envp && lyd_print_file(stdout, envp, LYD_XML, 0)) {
+                fprintf(stderr, "Failed to print notification envelope\n");
+                lyd_free_all(envp);
+                lyd_free_all(op);
+                return 1;
+            }
+            fflush(stdout);
+        }
+        lyd_free_all(envp);
+        lyd_free_all(op);
+    }
+    return 0;
 }
 
 static const char *
@@ -354,6 +539,13 @@ main(int argc, char **argv)
         rc = 1;
         goto cleanup;
     }
+    {
+        struct ly_ctx *ctx = (struct ly_ctx *)nc_session_get_ctx(session);
+        if (ctx) {
+            (void)ly_ctx_load_module(ctx, "notifications", NULL, NULL);
+            (void)ly_ctx_load_module(ctx, "ems-fault-management", NULL, NULL);
+        }
+    }
 
     const char *rpc_name = argv[optind];
     struct nc_rpc *rpc = NULL;
@@ -405,10 +597,84 @@ main(int argc, char **argv)
         /* Keep ownership local. */
         rpc = nc_rpc_edit(ds, NC_RPC_EDIT_DFLTOP_UNKNOWN, NC_RPC_EDIT_TESTOPT_UNKNOWN, NC_RPC_EDIT_ERROPT_UNKNOWN,
                 edit_content, NC_PARAMTYPE_CONST);
+    } else if (!strcmp(rpc_name, "validate")) {
+        NC_DATASTORE ds = NC_DATASTORE_CANDIDATE;
+        if (optind + 1 < argc) {
+            ds = string2datastore(argv[optind + 1]);
+            if (!ds) {
+                fprintf(stderr, "Invalid datastore: %s\n", argv[optind + 1]);
+                rc = 2;
+                goto cleanup;
+            }
+        }
+        rpc = nc_rpc_validate(ds, NULL, NC_PARAMTYPE_CONST);
+    } else if (!strcmp(rpc_name, "validate-config")) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "validate-config requires: <xml-file>\n");
+            rc = 2;
+            goto cleanup;
+        }
+        if (!strcmp(argv[optind + 1], "-")) {
+            edit_content = read_stdin_all();
+        } else {
+            edit_content = read_file(argv[optind + 1]);
+        }
+        if (!edit_content) {
+            rc = 1;
+            goto cleanup;
+        }
+        rpc = nc_rpc_validate(NC_DATASTORE_CONFIG, edit_content, NC_PARAMTYPE_CONST);
     } else if (!strcmp(rpc_name, "commit")) {
         rpc = nc_rpc_commit(0, 0, NULL, NULL, NC_PARAMTYPE_CONST);
     } else if (!strcmp(rpc_name, "discard-changes")) {
         rpc = nc_rpc_discard();
+    } else if (!strcmp(rpc_name, "lock")) {
+        NC_DATASTORE ds;
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "lock requires: <running|candidate>\n");
+            rc = 2;
+            goto cleanup;
+        }
+        ds = string2datastore(argv[optind + 1]);
+        if (!ds || ds == NC_DATASTORE_STARTUP) {
+            fprintf(stderr, "Invalid datastore for lock: %s\n", argv[optind + 1]);
+            rc = 2;
+            goto cleanup;
+        }
+        rpc = nc_rpc_lock(ds);
+    } else if (!strcmp(rpc_name, "unlock")) {
+        NC_DATASTORE ds;
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "unlock requires: <running|candidate>\n");
+            rc = 2;
+            goto cleanup;
+        }
+        ds = string2datastore(argv[optind + 1]);
+        if (!ds || ds == NC_DATASTORE_STARTUP) {
+            fprintf(stderr, "Invalid datastore for unlock: %s\n", argv[optind + 1]);
+            rc = 2;
+            goto cleanup;
+        }
+        rpc = nc_rpc_unlock(ds);
+    } else if (!strcmp(rpc_name, "subscribe")) {
+        int duration_sec = 30;
+        if (optind + 1 < argc) {
+            duration_sec = (int)strtol(argv[optind + 1], NULL, 10);
+        }
+        rc = run_subscribe(session, duration_sec, timeout_ms);
+        goto cleanup;
+    } else if (!strcmp(rpc_name, "sequence")) {
+        const char *action = "commit";
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "sequence requires: <xml-file|-> [commit|discard|no-commit]\n");
+            rc = 2;
+            goto cleanup;
+        }
+        if (optind + 2 < argc) {
+            action = argv[optind + 2];
+        }
+        rc = run_sequence(session, argv[optind + 1], action, timeout_ms);
+        goto cleanup;
     } else {
         fprintf(stderr, "Unknown RPC: %s\n", rpc_name);
         rc = 2;

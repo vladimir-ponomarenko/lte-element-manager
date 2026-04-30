@@ -17,15 +17,18 @@ import (
 
 // ProcessServer wraps the libnetconf2 SSH server binary.
 type ProcessServer struct {
-	Binary        string
-	Addr          string
-	YangDir       string
-	SnapshotPath  string
-	ControlURL    string
-	HostKey       string
-	AuthorizedKey string
-	Username      string
-	Log           zerolog.Logger
+	Binary            string
+	Addr              string
+	YangDir           string
+	SnapshotPath      string
+	RunningPath       string
+	CandidatePath     string
+	ControlURL        string
+	ControlUnixSocket string
+	HostKey           string
+	AuthorizedKey     string
+	Username          string
+	Log               zerolog.Logger
 }
 
 var execCommand = exec.Command
@@ -46,12 +49,17 @@ func (p *ProcessServer) Run(ctx context.Context) error {
 		"-addr", p.Addr,
 		"-yang", p.YangDir,
 		"-snapshot", p.SnapshotPath,
+		"-running", p.RunningPath,
+		"-candidate", p.CandidatePath,
 		"-hostkey", p.HostKey,
 		"-authorized-key", p.AuthorizedKey,
 		"-user", p.Username,
 	}
 	if strings.TrimSpace(p.ControlURL) != "" {
 		args = append(args, "-control", strings.TrimSpace(p.ControlURL))
+	}
+	if strings.TrimSpace(p.ControlUnixSocket) != "" {
+		args = append(args, "-control-unix", strings.TrimSpace(p.ControlUnixSocket))
 	}
 
 	cmd := execCommand(p.Binary, args...)
@@ -138,6 +146,12 @@ func scanNetconfErrors(r io.Reader, log zerolog.Logger) {
 	debug := log.GetLevel() <= zerolog.DebugLevel
 	for scanner.Scan() {
 		line := scanner.Text()
+		if isBenignNetconfDisconnect(line) {
+			if debug {
+				log.Debug().Msg(line)
+			}
+			continue
+		}
 		if strings.Contains(line, "[ERR]") || strings.Contains(line, "ERROR") || strings.Contains(line, "error") {
 			log.Error().Msg(line)
 			continue
@@ -153,6 +167,12 @@ func scanNetconfErrors(r io.Reader, log zerolog.Logger) {
 		}
 		log.Warn().Err(err).Msg("netconf stderr scan failed")
 	}
+}
+
+func isBenignNetconfDisconnect(line string) bool {
+	return strings.Contains(line, "SSH channel unexpectedly closed") ||
+		strings.Contains(line, "Communication socket unexpectedly closed") ||
+		strings.Contains(line, "Failed to write reply")
 }
 
 func emitNetconfGetLog(line, snapshotPath string, log zerolog.Logger, debug bool) {

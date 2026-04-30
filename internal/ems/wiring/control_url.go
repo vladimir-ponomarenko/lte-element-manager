@@ -11,6 +11,10 @@ func controlLocalURL(addr string) string {
 		return ""
 	}
 
+	if strings.HasPrefix(a, "unix:") {
+		return "http://localhost"
+	}
+
 	if strings.HasPrefix(a, ":") {
 		return "http://127.0.0.1" + a
 	}

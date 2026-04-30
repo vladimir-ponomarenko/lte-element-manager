@@ -1,0 +1,50 @@
+module notifications {
+  yang-version 1.1;
+  namespace "urn:ietf:params:xml:ns:netconf:notification:1.0";
+  prefix ncEvent;
+
+  organization "SibSUTIS & YADRO";
+  description
+    "RFC 5277 notification module used by the embedded EMS NETCONF
+     server for create-subscription and event notifications.";
+
+  revision 2026-05-06 {
+    description "RFC 5277 revision.";
+    reference "RFC 5277: NETCONF Event Notifications";
+  }
+
+  rpc create-subscription {
+    description "Subscribe to the default NETCONF event stream.";
+
+    input {
+      leaf stream {
+        type string;
+        default "NETCONF";
+      }
+      anyxml filter;
+      leaf startTime {
+        type string;
+      }
+      leaf stopTime {
+        type string;
+      }
+    }
+  }
+
+  notification notification {
+    description
+      "NETCONF event notification envelope used by RFC 5277. libnetconf2
+       parses the envelope separately from the vendor notification payload.";
+    leaf eventTime {
+      type string;
+    }
+  }
+
+  notification replayComplete {
+    description "Replay completed notification.";
+  }
+
+  notification notificationComplete {
+    description "Notification subscription completed.";
+  }
+}

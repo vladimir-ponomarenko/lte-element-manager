@@ -169,4 +169,16 @@ sib2 = {
 	if string(beforeRB) != string(afterRB) {
 		t.Fatalf("rb.conf changed unexpectedly")
 	}
+
+	_, err = s.Edit(map[string]any{"qci_profiles[7].priority": int32(10)})
+	if err != nil {
+		t.Fatalf("Edit(qci priority): %v", err)
+	}
+	if _, err := s.Commit(); err != nil {
+		t.Fatalf("Commit(qci priority): %v", err)
+	}
+	rbAfterQCI, _ := os.ReadFile(rbPath)
+	if !strings.Contains(string(rbAfterQCI), "priority = 10;") {
+		t.Fatalf("qci priority was not updated: %s", string(rbAfterQCI))
+	}
 }

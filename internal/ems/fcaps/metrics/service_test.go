@@ -25,10 +25,10 @@ func TestConsume_ParserBranchesAndChannelClose(t *testing.T) {
 
 	go Consume(ctx, in, b, func([]byte) (any, error) { return nil, errors.New("bad") }, log)
 
+	sub := b.Subscribe(ctx)
 	in <- domain.MetricSample{RawJSON: `{"x":1}`}
 	close(in)
 
-	sub := b.Subscribe(ctx)
 	select {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timeout waiting for publish")
@@ -51,9 +51,9 @@ func TestConsume_ParserSuccessSetsParsed(t *testing.T) {
 	b := bus.New(10)
 	go Consume(ctx, in, b, func([]byte) (any, error) { return "ok", nil }, zerolog.Nop())
 
+	sub := b.Subscribe(ctx)
 	in <- domain.MetricSample{RawJSON: `{"x":1}`}
 
-	sub := b.Subscribe(ctx)
 	select {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timeout")
@@ -79,10 +79,18 @@ func TestLog_IgnoresUnknownMessages(t *testing.T) {
 		close(done)
 	}()
 
+	deadline := time.Now().Add(2 * time.Second)
+	for b.SubscriberCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if b.SubscriberCount() == 0 {
+		t.Fatalf("metrics logger did not subscribe")
+	}
+
 	b.Publish("not-an-event")
 	b.Publish(Event{Sample: domain.MetricSample{RawJSON: `{"x":1}`}})
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(2 * time.Second)
 	for buf.String() == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}

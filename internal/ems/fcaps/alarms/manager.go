@@ -19,12 +19,13 @@ func NewManager(store *Store) *Manager {
 }
 
 func (m *Manager) Raise(at time.Time, component string, health string, alarm domain.Alarm) (Event, bool) {
+	alarm = Normalize(component, alarm.ManagedObjectInstance, alarm)
 	rec, changed := m.Store.Upsert(at, component, alarm)
 	return Event{
 		At:        at,
 		Component: component,
 		Health:    health,
-		Alarm:     domain.Alarm{Code: rec.Key.Code, Message: rec.Message, Severity: rec.Severity},
+		Alarm:     recordAlarm(rec),
 		Status:    rec.Status,
 		Count:     rec.Count,
 	}, changed
@@ -38,10 +39,31 @@ func (m *Manager) ClearComponent(at time.Time, component string, health string) 
 			At:        at,
 			Component: component,
 			Health:    health,
-			Alarm:     domain.Alarm{Code: rec.Key.Code, Message: rec.Message, Severity: rec.Severity},
+			Alarm:     recordAlarm(rec),
 			Status:    rec.Status,
 			Count:     rec.Count,
 		})
 	}
 	return out
+}
+
+func (m *Manager) Active() []Record {
+	if m == nil || m.Store == nil {
+		return nil
+	}
+	return m.Store.Active()
+}
+
+func recordAlarm(rec Record) domain.Alarm {
+	return domain.Alarm{
+		Code:                  rec.Key.Code,
+		Message:               rec.Message,
+		Severity:              rec.Severity,
+		AlarmID:               rec.AlarmID,
+		ManagedObjectInstance: rec.ManagedObjectInstance,
+		EventType:             rec.EventType,
+		ProbableCause:         rec.ProbableCause,
+		PerceivedSeverity:     rec.PerceivedSeverity,
+		SpecificProblem:       rec.SpecificProblem,
+	}
 }

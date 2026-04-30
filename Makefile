@@ -36,8 +36,9 @@ all: libyang libnetconf2
 
 
 build:
-	$(GO) build -o ems-agent ./cmd/ems-agent
+	$(MAKE) build-netconf
 	$(MAKE) build-netconf-server
+	$(MAKE) netconf-client
 
 test:
 	CGO_ENABLED=0 $(GO) test ./...
@@ -56,10 +57,12 @@ cover:
 	@echo "Open: .artifacts/coverage.html"
 
 build-netconf: libnetconf2 libyang
+	PKG_CONFIG_PATH="$(PREFIX_DIR)/lib/pkgconfig:$$PKG_CONFIG_PATH" \
 	CGO_ENABLED=1 LD_LIBRARY_PATH=$(PREFIX_DIR)/lib $(GO) build -tags netconf -o ems-agent ./cmd/ems-agent
 
 build-netconf-server: libnetconf2 libyang
-	$(CC) -O2 -o netconf-server ./cmd/netconf-server/server.c \
+	@mkdir -p "$(PREFIX_DIR)/bin"
+	$(CC) -O2 -o "$(PREFIX_DIR)/bin/netconf-server" ./cmd/netconf-server/server.c \
 		-I$(PREFIX_DIR)/include -L$(PREFIX_DIR)/lib -lnetconf2 -lyang -lssh -lssl -lcrypto -lcurl -lpthread
 
 run: build
@@ -119,7 +122,7 @@ libnetconf2: libyang $(LIBNETCONF2_BUILD)/CMakeCache.txt
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -rf .artifacts
-	rm -f ems-agent netconf-server $(PREFIX_DIR)/bin/netconf-client
+	rm -f ems-agent netconf-server $(PREFIX_DIR)/bin/netconf-server $(PREFIX_DIR)/bin/netconf-client
 
 distclean: clean
 	rm -rf $(THIRD_PARTY_DIR) $(PREFIX_DIR)

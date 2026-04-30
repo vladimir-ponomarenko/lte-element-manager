@@ -15,8 +15,11 @@ func TestManager_RaiseAndClear(t *testing.T) {
 	if !changed {
 		t.Fatalf("expected changed")
 	}
-	if evt.Component != "uds" || evt.Alarm.Code != "A" || evt.Status != StatusActive {
+	if evt.Component != "uds" || evt.Alarm.Code != AlarmUDSDisconnected || evt.Status != StatusActive {
 		t.Fatalf("unexpected evt: %+v", evt)
+	}
+	if evt.Alarm.EventType != EventTypeCommunicationsAlarm || evt.Alarm.PerceivedSeverity != SeverityCritical {
+		t.Fatalf("unexpected normalized alarm: %+v", evt.Alarm)
 	}
 
 	out := m.ClearComponent(at, "uds", "healthy")
@@ -25,5 +28,8 @@ func TestManager_RaiseAndClear(t *testing.T) {
 	}
 	if out[0].Status != StatusCleared {
 		t.Fatalf("expected cleared")
+	}
+	if len(m.Active()) != 0 {
+		t.Fatalf("expected no active alarms after clear")
 	}
 }

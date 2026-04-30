@@ -60,4 +60,24 @@ func TestStore_UpsertAndClear(t *testing.T) {
 	if len(snap) != 1 {
 		t.Fatalf("expected 1 snapshot record, got %d", len(snap))
 	}
+	active := s.Active()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active record, got %d", len(active))
+	}
+}
+
+func TestDictionary_NormalizeKnownAlarm(t *testing.T) {
+	a := Normalize("uds", "SubNetwork=srsRAN/ManagedElement=enb1", domain.Alarm{Message: "socket gone"})
+	if a.Code != AlarmUDSDisconnected {
+		t.Fatalf("unexpected code: %s", a.Code)
+	}
+	if a.EventType != EventTypeCommunicationsAlarm {
+		t.Fatalf("unexpected event type: %s", a.EventType)
+	}
+	if a.ProbableCause != ProbableCauseLANError {
+		t.Fatalf("unexpected probable cause: %s", a.ProbableCause)
+	}
+	if a.PerceivedSeverity != SeverityCritical {
+		t.Fatalf("unexpected severity: %s", a.PerceivedSeverity)
+	}
 }

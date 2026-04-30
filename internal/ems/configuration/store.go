@@ -130,6 +130,13 @@ type Store struct {
 	dirtyKeys map[string]struct{}
 }
 
+type FileBackup struct {
+	ENB []byte
+	RR  []byte
+	SIB []byte
+	RB  []byte
+}
+
 func NewStore(enbPath, rrPath, sibPath, rbPath string) (*Store, error) {
 	enb, err := srsranconf.ParseENB(enbPath)
 	if err != nil {
@@ -251,26 +258,59 @@ func convertQCIProfiles(in []srsranconf.QCIProfile) []QCIProfile {
 	return out
 }
 
+func cloneEditableConfig(in EditableConfig) EditableConfig {
+	out := in
+	if len(in.QCIProfiles) > 0 {
+		out.QCIProfiles = append([]QCIProfile(nil), in.QCIProfiles...)
+	}
+	return out
+}
+
 func (s *Store) Running() EditableConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.running
+	return cloneEditableConfig(s.running)
 }
 
 func (s *Store) Candidate() EditableConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cand
+	return cloneEditableConfig(s.cand)
 }
 
 func (s *Store) Edit(changes map[string]any) (EditableConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.editLocked(changes)
+}
+
+func (s *Store) PreviewEdit(changes map[string]any) (EditableConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	next := cloneEditableConfig(s.cand)
+	for k, v := range changes {
+		key := strings.TrimSpace(k)
+		if err := applyChange(&next, key, v); err != nil {
+			return EditableConfig{}, err
+		}
+	}
+	if err := validate(next); err != nil {
+		return EditableConfig{}, err
+	}
+	return cloneEditableConfig(next), nil
+}
+
+func ValidateConfig(cfg EditableConfig) error {
+	return validate(cloneEditableConfig(cfg))
+}
+
+func (s *Store) editLocked(changes map[string]any) (EditableConfig, error) {
 
 	if s.dirtyKeys == nil {
 		s.dirtyKeys = make(map[string]struct{}, len(changes))
 	}
-	next := s.cand
+	next := cloneEditableConfig(s.cand)
 	for k, v := range changes {
 		key := strings.TrimSpace(k)
 		if err := applyChange(&next, key, v); err != nil {
@@ -282,14 +322,14 @@ func (s *Store) Edit(changes map[string]any) (EditableConfig, error) {
 	if err := validate(next); err != nil {
 		return EditableConfig{}, err
 	}
-	s.cand = next
-	return next, nil
+	s.cand = cloneEditableConfig(next)
+	return cloneEditableConfig(next), nil
 }
 
 func (s *Store) ResetCandidate() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cand = s.running
+	s.cand = cloneEditableConfig(s.running)
 	s.dirty.enb = false
 	s.dirty.rr = false
 	s.dirty.sib = false
@@ -298,39 +338,144 @@ func (s *Store) ResetCandidate() {
 }
 
 func (s *Store) Commit() (EditableConfig, error) {
+	backup, next, err := s.PersistCandidate()
+	if err != nil {
+		return EditableConfig{}, err
+	}
+	if err := s.FinalizeCommit(); err != nil {
+		_ = s.RollbackPersist(backup)
+		return EditableConfig{}, err
+	}
+	return next, nil
+}
+
+func (s *Store) PersistCandidate() (*FileBackup, EditableConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err := validate(s.cand); err != nil {
-		return EditableConfig{}, err
+		return nil, EditableConfig{}, err
 	}
+
+	backup, err := s.backupDirtyFilesLocked()
+	if err != nil {
+		return nil, EditableConfig{}, err
+	}
+
+	restored := false
+	restoreOnError := func() {
+		if restored {
+			return
+		}
+		restored = true
+		_ = s.restoreDirtyFilesLocked(backup)
+	}
+
 	if s.dirty.enb {
 		if err := writeENBConfig(s.enbPath, s.cand, s.dirtyKeys); err != nil {
-			return EditableConfig{}, err
+			restoreOnError()
+			return nil, EditableConfig{}, err
 		}
 	}
 	if s.dirty.rr {
 		if err := writeRRConfig(s.rrPath, s.cand, s.dirtyKeys); err != nil {
-			return EditableConfig{}, err
+			restoreOnError()
+			return nil, EditableConfig{}, err
 		}
 	}
 	if s.dirty.sib {
 		if err := writeSIBConfig(s.sibPath, s.cand, s.dirtyKeys); err != nil {
-			return EditableConfig{}, err
+			restoreOnError()
+			return nil, EditableConfig{}, err
 		}
 	}
 	if s.dirty.rb {
 		if err := writeRBConfig(s.rbPath, s.cand, s.dirtyKeys); err != nil {
-			return EditableConfig{}, err
+			restoreOnError()
+			return nil, EditableConfig{}, err
 		}
 	}
-	s.running = s.cand
+
+	return backup, cloneEditableConfig(s.cand), nil
+}
+
+func (s *Store) FinalizeCommit() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := validate(s.cand); err != nil {
+		return err
+	}
+	s.running = cloneEditableConfig(s.cand)
 	s.dirty.enb = false
 	s.dirty.rr = false
 	s.dirty.sib = false
 	s.dirty.rb = false
 	s.dirtyKeys = nil
-	return s.running, nil
+	return nil
+}
+
+func (s *Store) RollbackPersist(backup *FileBackup) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.restoreDirtyFilesLocked(backup)
+}
+
+func (s *Store) backupDirtyFilesLocked() (*FileBackup, error) {
+	backup := &FileBackup{}
+	var err error
+	if s.dirty.enb {
+		backup.ENB, err = os.ReadFile(s.enbPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.dirty.rr {
+		backup.RR, err = os.ReadFile(s.rrPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.dirty.sib {
+		backup.SIB, err = os.ReadFile(s.sibPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.dirty.rb {
+		backup.RB, err = os.ReadFile(s.rbPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return backup, nil
+}
+
+func (s *Store) restoreDirtyFilesLocked(backup *FileBackup) error {
+	if backup == nil {
+		return nil
+	}
+	if s.dirty.enb && backup.ENB != nil {
+		if err := atomicWrite(s.enbPath, backup.ENB); err != nil {
+			return err
+		}
+	}
+	if s.dirty.rr && backup.RR != nil {
+		if err := atomicWrite(s.rrPath, backup.RR); err != nil {
+			return err
+		}
+	}
+	if s.dirty.sib && backup.SIB != nil {
+		if err := atomicWrite(s.sibPath, backup.SIB); err != nil {
+			return err
+		}
+	}
+	if s.dirty.rb && backup.RB != nil {
+		if err := atomicWrite(s.rbPath, backup.RB); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) markDirtyLocked(key string) {
@@ -755,7 +900,7 @@ func applyChange(cfg *EditableConfig, key string, val any) error {
 
 func applyQCIProfileChange(cfg *EditableConfig, key string, val any) error {
 	// key format: qci_profiles[<qci>].<field>
-	re := regexp.MustCompile(`^qci_profiles\\[(\\d+)\\]\\.([A-Za-z0-9_]+)$`)
+	re := regexp.MustCompile(`^qci_profiles\[(\d+)\]\.([A-Za-z0-9_]+)$`)
 	m := re.FindStringSubmatch(key)
 	if len(m) != 3 {
 		return fmt.Errorf("invalid qci_profiles key: %s", key)
@@ -1497,6 +1642,8 @@ func asInt32(v any) (int32, bool) {
 			return 0, false
 		}
 		return int32(x), true
+	case int32:
+		return x, true
 	case int64:
 		if x < minInt32 || x > maxInt32 {
 			return 0, false

@@ -54,8 +54,14 @@ func TestFaultService_PublishesAlarmsOnHealthTransitions(t *testing.T) {
 			if evt.Health != string(health.StateDegraded) {
 				t.Fatalf("expected degraded health, got %s", evt.Health)
 			}
-			if evt.Alarm.Code != "EMS_NETWORK" {
+			if evt.Alarm.Code != alarms.AlarmUDSDisconnected {
 				t.Fatalf("unexpected alarm code: %s", evt.Alarm.Code)
+			}
+			if evt.Alarm.EventType != alarms.EventTypeCommunicationsAlarm {
+				t.Fatalf("unexpected event type: %s", evt.Alarm.EventType)
+			}
+			if evt.Alarm.PerceivedSeverity != alarms.SeverityCritical {
+				t.Fatalf("unexpected perceived severity: %s", evt.Alarm.PerceivedSeverity)
 			}
 			gotActive = true
 		}
