@@ -3,6 +3,9 @@ package bus
 import (
 	"context"
 	"sync"
+	"sync/atomic"
+
+	"github.com/rs/zerolog"
 )
 
 type Message interface{}
@@ -11,6 +14,8 @@ type Bus struct {
 	mu     sync.RWMutex
 	buffer int
 	subs   map[chan Message]struct{}
+	log    zerolog.Logger
+	drops  atomic.Uint64
 }
 
 func New(buffer int) *Bus {
@@ -23,6 +28,12 @@ func New(buffer int) *Bus {
 	}
 }
 
+func NewWithLogger(buffer int, log zerolog.Logger) *Bus {
+	b := New(buffer)
+	b.log = log
+	return b
+}
+
 func (b *Bus) Publish(msg Message) {
 	if b == nil {
 		return
@@ -33,7 +44,10 @@ func (b *Bus) Publish(msg Message) {
 		select {
 		case ch <- msg:
 		default:
-			// Drop for slow subscribers so critical paths do not block.
+			n := b.drops.Add(1)
+			if n == 1 || n%100 == 0 {
+				b.log.Warn().Uint64("drop_count", n).Int("subscribers", len(b.subs)).Msg("bus saturated, dropping message")
+			}
 		}
 	}
 }

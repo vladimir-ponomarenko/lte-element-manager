@@ -19,6 +19,7 @@ import (
 	"lte-element-manager/internal/ems/fcaps/alarms"
 	"lte-element-manager/internal/ems/fcaps/metrics"
 	"lte-element-manager/internal/ems/fcaps/pm"
+	"lte-element-manager/internal/ems/fcaps/tca"
 	"lte-element-manager/internal/ems/health"
 	"lte-element-manager/internal/ems/logging"
 	mediationSRSRAN "lte-element-manager/internal/ems/mediation/srsran"
@@ -50,7 +51,7 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	logPM := logging.WithComponent(c.log, c.cfg.Log, "pm")
 	logControl := logging.WithComponent(c.log, c.cfg.Log, "control")
 
-	b := bus.New(c.cfg.Bus.Buffer)
+	b := bus.NewWithLogger(c.cfg.Bus.Buffer, logging.WithComponent(c.log, c.cfg.Log, "bus"))
 	rawIn := make(chan domain.MetricSample, 200)
 	rawForMapping := make(chan domain.MetricSample, 200)
 	rawForSnapshot := make(chan domain.MetricSample, 200)
@@ -66,12 +67,40 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	runner := service.NewRunner(c.log)
 	h := health.New()
 
-	alarmStore := alarms.NewStore()
+	snapshotPath := c.cfg.Netconf.SnapshotPath
+	if snapshotPath == "" {
+		snapshotPath = c.cfg.Metrics.SnapshotPath
+	}
+
+	aalPath := ""
+	if snapshotPath != "" {
+		aalPath = filepath.Join(filepath.Dir(snapshotPath), "aal_state.json")
+	}
+	alarmStore, err := alarms.NewPersistentStore(aalPath)
+	if err != nil {
+		return nil, emserrors.Wrap(err, emserrors.ErrCodeConfig, "failed to load active alarm list",
+			emserrors.WithOp("wiring"),
+			emserrors.WithSeverity(emserrors.SeverityCritical),
+		)
+	}
+	alarmStore.OnPersistError(func(err error) {
+		logFaults.Error().Err(err).Str("path", aalPath).Msg("active alarm list persistence failed")
+	})
 	alarmMgr := alarms.NewManager(alarmStore)
 	notificationQueue := alarms.NewNotificationQueue(alarms.DefaultNotificationQueueCapacity)
+	alarmMgr.OnEvent = func(evt alarms.Event) {
+		if err := notificationQueue.AppendAlarmEvent(evt); err != nil {
+			logFaults.Error().Err(err).Str("alarm_id", evt.Alarm.AlarmID).Msg("failed to enqueue alarm notification")
+		}
+	}
 	runner.Add(services.NewFaultService(b, h, alarmMgr, logFaults))
-	runner.Add(services.NewTCAService(b, alarmMgr, logFaults))
-	runner.Add(services.NewNetconfNotificationService(b, notificationQueue, logNetconf))
+	tcaCfg, err := buildTCAConfig(c.cfg.FM.TCA)
+	if err != nil {
+		return nil, err
+	}
+	if tcaCfg.Enabled {
+		runner.Add(services.NewTCAService(b, alarmMgr, tcaCfg, logFaults))
+	}
 
 	reg, err := nrm.New(nrm.Config{
 		SubNetwork:     c.cfg.NRM.SubNetwork,
@@ -88,11 +117,6 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	reader := services.NewMetricsReader(agent, rawIn, logAdapter, h)
 	reader.LogUDS = c.cfg.Metrics.LogUDS
 	runner.Add(reader)
-
-	snapshotPath := c.cfg.Netconf.SnapshotPath
-	if snapshotPath == "" {
-		snapshotPath = c.cfg.Metrics.SnapshotPath
-	}
 
 	runner.Add(services.NewRawFanout(rawIn, rawForMapping, rawForSnapshot, logAdapter))
 	pmStore := pm.NewStore()
@@ -116,10 +140,14 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	runner.Add(services.NewMetricsConsumer(rawForMapping, b, mapper, logMetrics))
 	runner.Add(services.NewTelemetryCache(b, telemetryStore, logMetrics))
 
-	if c.cfg.PM.Enabled {
+	pmEnabled := c.cfg.PM.Enabled || tcaCfg.Enabled
+	if pmEnabled {
 		pmCfg, err := pm.ParseConfig(c.cfg.PM.GranularityPeriod, c.cfg.PM.ReportPeriod)
 		if err != nil {
 			return nil, err
+		}
+		if !c.cfg.PM.Enabled && tcaCfg.Enabled {
+			logPM.Warn().Msg("pm engine enabled automatically because fm.tca.enabled=true")
 		}
 		engine := pm.NewEngine(b, reg, pmStore, pmCfg, logPM)
 		runner.Add(services.NewPMEngine(engine, logPM))
@@ -265,10 +293,14 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 					)
 				}
 				netconfMgr = manager
+				runner.Add(services.NewNetconfSessionGC(netconfMgr, logControl))
 			}
 		}
 
-		runner.Add(services.NewConfigControl(c.cfg.Control.Addr, targets, sup, cfgStore, netconfMgr, notificationQueue, logControl))
+		controlSvc := services.NewConfigControl(c.cfg.Control.Addr, targets, sup, cfgStore, netconfMgr, notificationQueue, logControl)
+		controlSvc.Bus = b
+		controlSvc.TCATestInject = c.cfg.FM.TCA.TestInjectionEnabled
+		runner.Add(controlSvc)
 		logControl.Info().
 			Str("addr", c.cfg.Control.Addr).
 			Int("targets", len(targets)).
@@ -314,4 +346,86 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 	}
 
 	return runner, nil
+}
+
+func buildTCAConfig(in config.TCAConfig) (tca.Config, error) {
+	if !in.Enabled {
+		return tca.Config{}, nil
+	}
+	rules := map[string]config.TCARuleConfig{
+		tca.RuleS1InterfaceDown:        in.Rules.S1InterfaceDown,
+		tca.RuleNASSignalingLoss:       in.Rules.NASSignalingLoss,
+		tca.RuleNASSecurityMismatch:    in.Rules.NASSecurityMismatch,
+		tca.RuleNASParsingFailure:      in.Rules.NASParsingFailure,
+		tca.RuleRRCProtocolError:       in.Rules.RRCProtocolError,
+		tca.RuleRRCConnectionRejection: in.Rules.RRCConnectionRejection,
+		tca.RuleCoreServiceReject:      in.Rules.CoreServiceReject,
+		tca.RulePagingCapacityExceeded: in.Rules.PagingCapacityExceeded,
+		tca.RuleRLCMaxRetransmissions:  in.Rules.RLCMaxRetransmissions,
+		tca.RuleLowThroughput:          in.Rules.LowThroughput,
+		tca.RuleBadSignalCondition:     firstConfiguredRule(in.Rules.BadSignalCondition, in.Rules.LowULSINR),
+		tca.RuleHighBLER:               in.Rules.HighBLER,
+		tca.RuleRLFStorm:               in.Rules.RadioLinkFailureStorm,
+		tca.RuleRFInterference:         in.Rules.RFInterferenceDetected,
+		tca.RuleUEInactivityCleanup:    in.Rules.UEInactivityCleanup,
+		tca.RuleBearerCongestion:       in.Rules.BearerCongestion,
+		tca.RulePowerHeadroomCritical:  in.Rules.PowerHeadroomCritical,
+	}
+	out := tca.Config{Enabled: true, Rules: make(map[string]tca.RuleConfig, len(rules))}
+	for name, raw := range rules {
+		if !isTCARuleConfigured(raw) {
+			continue
+		}
+		rule, err := buildTCARule(raw)
+		if err != nil {
+			return tca.Config{}, err
+		}
+		out.Rules[name] = rule
+	}
+	return tca.NormalizeConfig(out), nil
+}
+
+func firstConfiguredRule(primary, fallback config.TCARuleConfig) config.TCARuleConfig {
+	if isTCARuleConfigured(primary) {
+		return primary
+	}
+	return fallback
+}
+
+func isTCARuleConfigured(rule config.TCARuleConfig) bool {
+	return rule.Enabled || rule.RaiseThreshold != 0 || rule.ClearThreshold != 0 ||
+		rule.RaiseDuration != "" || rule.ClearDuration != ""
+}
+
+func buildTCARule(in config.TCARuleConfig) (tca.RuleConfig, error) {
+	raiseDuration, err := parseTCADuration(in.RaiseDuration)
+	if err != nil {
+		return tca.RuleConfig{}, err
+	}
+	clearDuration, err := parseTCADuration(in.ClearDuration)
+	if err != nil {
+		return tca.RuleConfig{}, err
+	}
+	return tca.RuleConfig{
+		Enabled:        in.Enabled,
+		RaiseThreshold: in.RaiseThreshold,
+		ClearThreshold: in.ClearThreshold,
+		RaiseDuration:  raiseDuration,
+		ClearDuration:  clearDuration,
+	}, nil
+}
+
+func parseTCADuration(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, emserrors.Wrap(err, emserrors.ErrCodeConfig, "invalid fm.tca rule duration",
+			emserrors.WithOp("wiring"),
+			emserrors.WithSeverity(emserrors.SeverityCritical),
+		)
+	}
+	return d, nil
 }

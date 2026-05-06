@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -26,6 +25,9 @@ type ENBConfig struct {
 	DeviceName      string
 	DeviceArgs      string
 	BaseSrateHz     float64
+	SIBConfigFile   string
+	RRConfigFile    string
+	RBConfigFile    string
 
 	// Scheduler.
 	SchedPolicy       string
@@ -54,6 +56,10 @@ type ENBConfig struct {
 	RLFMinULSNREstim   float64
 	MaxMacDLKOs        int32
 	MaxMacULKOs        int32
+	ReportJSONUDS      bool
+	ReportJSONUDSPath  string
+	AlarmsLogEnable    bool
+	AlarmsFilename     string
 }
 
 type RRConfig struct {
@@ -66,11 +72,6 @@ type RRConfig struct {
 	TimeToTrigger int32
 	Hysteresis    int32
 }
-
-var (
-	reSection = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
-	reKV      = regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*;?\s*$`)
-)
 
 func ParseENB(path string) (ENBConfig, error) {
 	f, err := os.Open(path)
@@ -88,16 +89,16 @@ func ParseENB(path string) (ENBConfig, error) {
 		if line == "" {
 			continue
 		}
-		if m := reSection.FindStringSubmatch(line); len(m) == 2 {
-			section = strings.ToLower(strings.TrimSpace(m[1]))
+		if sec, ok := parseSectionLine(line); ok {
+			section = sec
 			continue
 		}
-		m := reKV.FindStringSubmatch(line)
-		if len(m) != 3 {
+		rawKey, rawVal, ok := parseAssignmentLine(line)
+		if !ok {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(m[1]))
-		val := strings.Trim(strings.TrimSpace(m[2]), `"`)
+		key := strings.ToLower(rawKey)
+		val := unquoteScalar(rawVal)
 
 		switch section {
 		case "enb":
@@ -126,6 +127,15 @@ func ParseENB(path string) (ENBConfig, error) {
 				if uv, parseErr := strconv.ParseUint(val, 10, 32); parseErr == nil {
 					out.TM = uint32(uv)
 				}
+			}
+		case "enb_files":
+			switch key {
+			case "sib_config":
+				out.SIBConfigFile = val
+			case "rr_config":
+				out.RRConfigFile = val
+			case "rb_config":
+				out.RBConfigFile = val
 			}
 		case "rf":
 			switch key {
@@ -199,6 +209,24 @@ func ParseENB(path string) (ENBConfig, error) {
 				if iv, parseErr := strconv.ParseInt(val, 10, 32); parseErr == nil {
 					out.MetricsPeriodSecs = int32(iv)
 				}
+			case "report_json_uds_enable":
+				switch strings.ToLower(val) {
+				case "true":
+					out.ReportJSONUDS = true
+				case "false":
+					out.ReportJSONUDS = false
+				}
+			case "report_json_uds_path":
+				out.ReportJSONUDSPath = val
+			case "alarms_log_enable":
+				switch strings.ToLower(val) {
+				case "true":
+					out.AlarmsLogEnable = true
+				case "false":
+					out.AlarmsLogEnable = false
+				}
+			case "alarms_filename":
+				out.AlarmsFilename = val
 			case "tx_amplitude":
 				if fv, parseErr := strconv.ParseFloat(val, 64); parseErr == nil {
 					out.TXAmplitude = fv
@@ -301,12 +329,12 @@ func ParseRR(path string) (RRConfig, error) {
 		if line == "" {
 			continue
 		}
-		m := reKV.FindStringSubmatch(line)
-		if len(m) != 3 {
+		rawKey, rawVal, ok := parseAssignmentLine(line)
+		if !ok {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(m[1]))
-		val := strings.Trim(strings.TrimSpace(m[2]), `"`)
+		key := strings.ToLower(rawKey)
+		val := unquoteScalar(rawVal)
 
 		switch key {
 		case "cell_id":
@@ -369,15 +397,121 @@ func ParseRR(path string) (RRConfig, error) {
 }
 
 func stripInlineComment(s string) string {
-	x := strings.TrimSpace(s)
-	if x == "" {
-		return ""
+	end := len(s)
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '#':
+			if isInlineCommentAt(s, i) {
+				end = i
+				i = len(s)
+			}
+		case '/':
+			if i+1 < len(s) && s[i+1] == '/' && isInlineCommentAt(s, i) {
+				end = i
+				i = len(s)
+			}
+		}
 	}
-	if strings.HasPrefix(x, "#") || strings.HasPrefix(x, "//") {
-		return ""
+	return strings.TrimSpace(s[:end])
+}
+
+func parseSectionLine(line string) (string, bool) {
+	x := strings.TrimSpace(line)
+	if len(x) < 3 || x[0] != '[' || x[len(x)-1] != ']' {
+		return "", false
 	}
-	if i := strings.Index(x, "#"); i >= 0 {
-		x = strings.TrimSpace(x[:i])
+	name := strings.TrimSpace(x[1 : len(x)-1])
+	if name == "" {
+		return "", false
 	}
-	return x
+	return strings.ToLower(name), true
+}
+
+func parseAssignmentLine(line string) (key, value string, ok bool) {
+	x := strings.TrimSpace(line)
+	if x == "" || !isIdentifierStart(x[0]) {
+		return "", "", false
+	}
+	i := 1
+	for i < len(x) && isIdentifier(x[i]) {
+		i++
+	}
+	key = strings.TrimSpace(x[:i])
+	j := skipSpace(x, i)
+	if key == "" || j >= len(x) || x[j] != '=' {
+		return "", "", false
+	}
+	value = strings.TrimSpace(x[j+1:])
+	if strings.HasSuffix(value, ";") {
+		value = strings.TrimSpace(strings.TrimSuffix(value, ";"))
+	}
+	return key, value, true
+}
+
+func unquoteScalar(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		if unq, err := strconv.Unquote(v); err == nil {
+			return unq
+		}
+		return v[1 : len(v)-1]
+	}
+	return v
+}
+
+func skipSpace(s string, i int) int {
+	for i < len(s) {
+		switch s[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+func isIdentifierStart(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'
+}
+
+func isIdentifier(c byte) bool {
+	return isIdentifierStart(c) || (c >= '0' && c <= '9')
+}
+
+func isInlineCommentAt(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	if s[i] != '#' && !(s[i] == '/' && i+1 < len(s) && s[i+1] == '/') {
+		return false
+	}
+	if i == 0 {
+		return true
+	}
+	switch s[i-1] {
+	case ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
 }

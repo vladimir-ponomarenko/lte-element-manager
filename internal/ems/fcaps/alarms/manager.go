@@ -8,7 +8,8 @@ import (
 
 // Manager deduplicates alarms, updates the store, and emits alarm events.
 type Manager struct {
-	Store *Store
+	Store   *Store
+	OnEvent func(Event)
 }
 
 func NewManager(store *Store) *Manager {
@@ -21,30 +22,64 @@ func NewManager(store *Store) *Manager {
 func (m *Manager) Raise(at time.Time, component string, health string, alarm domain.Alarm) (Event, bool) {
 	alarm = Normalize(component, alarm.ManagedObjectInstance, alarm)
 	rec, changed := m.Store.Upsert(at, component, alarm)
-	return Event{
+	evt := Event{
 		At:        at,
 		Component: component,
 		Health:    health,
 		Alarm:     recordAlarm(rec),
 		Status:    rec.Status,
 		Count:     rec.Count,
-	}, changed
+	}
+	if changed && m.OnEvent != nil {
+		m.OnEvent(evt)
+	}
+	return evt, changed
+}
+
+func (m *Manager) Touch(at time.Time, component string, code string) {
+	if m == nil || m.Store == nil {
+		return
+	}
+	m.Store.Touch(at, component, code)
 }
 
 func (m *Manager) ClearComponent(at time.Time, component string, health string) []Event {
 	cleared := m.Store.ClearComponent(at, component)
 	out := make([]Event, 0, len(cleared))
 	for _, rec := range cleared {
-		out = append(out, Event{
+		evt := Event{
 			At:        at,
 			Component: component,
 			Health:    health,
 			Alarm:     recordAlarm(rec),
 			Status:    rec.Status,
 			Count:     rec.Count,
-		})
+		}
+		if m.OnEvent != nil {
+			m.OnEvent(evt)
+		}
+		out = append(out, evt)
 	}
 	return out
+}
+
+func (m *Manager) Clear(at time.Time, component string, code string, health string) (Event, bool) {
+	rec, ok := m.Store.Clear(at, component, code)
+	if !ok {
+		return Event{}, false
+	}
+	evt := Event{
+		At:        at,
+		Component: component,
+		Health:    health,
+		Alarm:     recordAlarm(rec),
+		Status:    rec.Status,
+		Count:     rec.Count,
+	}
+	if m.OnEvent != nil {
+		m.OnEvent(evt)
+	}
+	return evt, true
 }
 
 func (m *Manager) Active() []Record {

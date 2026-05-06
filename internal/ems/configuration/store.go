@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +18,14 @@ import (
 
 type EditableConfig struct {
 	// Element identity.
-	ENBSerial string `json:"enb_serial"`
+	ENBSerial           string `json:"enb_serial"`
+	SIBConfigFile       string `json:"-"`
+	RRConfigFile        string `json:"-"`
+	RBConfigFile        string `json:"-"`
+	ReportJSONUDSEnable bool   `json:"-"`
+	ReportJSONUDSPath   string `json:"-"`
+	AlarmsLogEnable     bool   `json:"-"`
+	AlarmsFilename      string `json:"-"`
 
 	// enb.conf [enb]
 	ENBID       string `json:"enb_id"`
@@ -131,10 +137,11 @@ type Store struct {
 }
 
 type FileBackup struct {
-	ENB []byte
-	RR  []byte
-	SIB []byte
-	RB  []byte
+	ENB   []byte
+	RR    []byte
+	SIB   []byte
+	RB    []byte
+	Dirty bool
 }
 
 func NewStore(enbPath, rrPath, sibPath, rbPath string) (*Store, error) {
@@ -156,6 +163,22 @@ func NewStore(enbPath, rrPath, sibPath, rbPath string) (*Store, error) {
 	}
 	cfg := EditableConfig{
 		ENBSerial: strings.TrimSpace(enb.Serial),
+		SIBConfigFile: firstNonEmpty(
+			strings.TrimSpace(enb.SIBConfigFile),
+			filepath.Base(sibPath),
+		),
+		RRConfigFile: firstNonEmpty(
+			strings.TrimSpace(enb.RRConfigFile),
+			filepath.Base(rrPath),
+		),
+		RBConfigFile: firstNonEmpty(
+			strings.TrimSpace(enb.RBConfigFile),
+			filepath.Base(rbPath),
+		),
+		ReportJSONUDSEnable: enb.ReportJSONUDS,
+		ReportJSONUDSPath:   strings.TrimSpace(enb.ReportJSONUDSPath),
+		AlarmsLogEnable:     enb.AlarmsLogEnable,
+		AlarmsFilename:      strings.TrimSpace(enb.AlarmsFilename),
 
 		ENBID:       strings.TrimSpace(enb.ENBID),
 		MCC:         strings.TrimSpace(enb.MCC),
@@ -278,6 +301,12 @@ func (s *Store) Candidate() EditableConfig {
 	return cloneEditableConfig(s.cand)
 }
 
+func (s *Store) HasPendingChanges() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dirty.enb || s.dirty.rr || s.dirty.sib || s.dirty.rb
+}
+
 func (s *Store) Edit(changes map[string]any) (EditableConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -361,41 +390,16 @@ func (s *Store) PersistCandidate() (*FileBackup, EditableConfig, error) {
 	if err != nil {
 		return nil, EditableConfig{}, err
 	}
-
-	restored := false
-	restoreOnError := func() {
-		if restored {
-			return
-		}
-		restored = true
+	staged, err := s.stageDirtyFilesLocked()
+	if err != nil {
 		_ = s.restoreDirtyFilesLocked(backup)
+		return nil, EditableConfig{}, err
 	}
-
-	if s.dirty.enb {
-		if err := writeENBConfig(s.enbPath, s.cand, s.dirtyKeys); err != nil {
-			restoreOnError()
-			return nil, EditableConfig{}, err
-		}
+	if err := commitStagedFiles(staged); err != nil {
+		_ = cleanupStagedFiles(staged)
+		_ = s.restoreDirtyFilesLocked(backup)
+		return nil, EditableConfig{}, err
 	}
-	if s.dirty.rr {
-		if err := writeRRConfig(s.rrPath, s.cand, s.dirtyKeys); err != nil {
-			restoreOnError()
-			return nil, EditableConfig{}, err
-		}
-	}
-	if s.dirty.sib {
-		if err := writeSIBConfig(s.sibPath, s.cand, s.dirtyKeys); err != nil {
-			restoreOnError()
-			return nil, EditableConfig{}, err
-		}
-	}
-	if s.dirty.rb {
-		if err := writeRBConfig(s.rbPath, s.cand, s.dirtyKeys); err != nil {
-			restoreOnError()
-			return nil, EditableConfig{}, err
-		}
-	}
-
 	return backup, cloneEditableConfig(s.cand), nil
 }
 
@@ -425,30 +429,96 @@ func (s *Store) backupDirtyFilesLocked() (*FileBackup, error) {
 	backup := &FileBackup{}
 	var err error
 	if s.dirty.enb {
+		backup.Dirty = true
 		backup.ENB, err = os.ReadFile(s.enbPath)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if s.dirty.rr {
+		backup.Dirty = true
 		backup.RR, err = os.ReadFile(s.rrPath)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if s.dirty.sib {
+		backup.Dirty = true
 		backup.SIB, err = os.ReadFile(s.sibPath)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if s.dirty.rb {
+		backup.Dirty = true
 		backup.RB, err = os.ReadFile(s.rbPath)
 		if err != nil {
 			return nil, err
 		}
 	}
 	return backup, nil
+}
+
+type stagedFile struct {
+	final string
+	tmp   string
+}
+
+func (s *Store) stageDirtyFilesLocked() ([]stagedFile, error) {
+	var staged []stagedFile
+	stage := func(path string, data []byte) error {
+		tmp, err := writeTempSibling(path, data)
+		if err != nil {
+			return err
+		}
+		staged = append(staged, stagedFile{final: path, tmp: tmp})
+		return nil
+	}
+	if s.dirty.enb {
+		data, err := renderENBConfig(s.enbPath, s.cand, s.dirtyKeys)
+		if err != nil {
+			_ = cleanupStagedFiles(staged)
+			return nil, err
+		}
+		if err := stage(s.enbPath, data); err != nil {
+			_ = cleanupStagedFiles(staged)
+			return nil, err
+		}
+	}
+	if s.dirty.rr {
+		data, err := renderRRConfig(s.rrPath, s.cand, s.dirtyKeys)
+		if err != nil {
+			_ = cleanupStagedFiles(staged)
+			return nil, err
+		}
+		if err := stage(s.rrPath, data); err != nil {
+			_ = cleanupStagedFiles(staged)
+			return nil, err
+		}
+	}
+	if s.dirty.sib {
+		data, err := renderSIBConfig(s.sibPath, s.cand, s.dirtyKeys)
+		if err != nil {
+			_ = cleanupStagedFiles(staged)
+			return nil, err
+		}
+		if err := stage(s.sibPath, data); err != nil {
+			_ = cleanupStagedFiles(staged)
+			return nil, err
+		}
+	}
+	if s.dirty.rb {
+		data, err := renderRBConfig(s.rbPath, s.cand, s.dirtyKeys)
+		if err != nil {
+			_ = cleanupStagedFiles(staged)
+			return nil, err
+		}
+		if err := stage(s.rbPath, data); err != nil {
+			_ = cleanupStagedFiles(staged)
+			return nil, err
+		}
+	}
+	return staged, nil
 }
 
 func (s *Store) restoreDirtyFilesLocked(backup *FileBackup) error {
@@ -900,17 +970,13 @@ func applyChange(cfg *EditableConfig, key string, val any) error {
 
 func applyQCIProfileChange(cfg *EditableConfig, key string, val any) error {
 	// key format: qci_profiles[<qci>].<field>
-	re := regexp.MustCompile(`^qci_profiles\[(\d+)\]\.([A-Za-z0-9_]+)$`)
-	m := re.FindStringSubmatch(key)
-	if len(m) != 3 {
+	qci, field, ok := parseQCIProfileKey(key)
+	if !ok {
 		return fmt.Errorf("invalid qci_profiles key: %s", key)
 	}
-	qci64, _ := strconv.ParseInt(m[1], 10, 32)
-	qci := int32(qci64)
 	if qci < 1 || qci > 9 {
 		return fmt.Errorf("qci must be in range 1..9")
 	}
-	field := m[2]
 
 	// Find or create.
 	idx := -1
@@ -974,10 +1040,10 @@ func validate(cfg EditableConfig) error {
 	if strings.TrimSpace(cfg.ENBSerial) == "" || len(cfg.ENBSerial) > 128 {
 		return fmt.Errorf("enb_serial is invalid")
 	}
-	if ok, _ := regexp.MatchString(`^[0-9]{3}$`, cfg.MCC); !ok {
+	if !isFixedDigits(cfg.MCC, 3) {
 		return fmt.Errorf("mcc must match [0-9]{3}")
 	}
-	if ok, _ := regexp.MatchString(`^[0-9]{2,3}$`, cfg.MNC); !ok {
+	if !(isFixedDigits(cfg.MNC, 2) || isFixedDigits(cfg.MNC, 3)) {
 		return fmt.Errorf("mnc must match [0-9]{2,3}")
 	}
 	if strings.TrimSpace(cfg.ENBID) == "" || len(cfg.ENBID) > 64 {
@@ -1053,518 +1119,125 @@ func validate(cfg EditableConfig) error {
 	return nil
 }
 
-func writeENBConfig(path string, cfg EditableConfig, keys map[string]struct{}) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	src := string(b)
-	if _, ok := keys["enb_id"]; ok {
-		src = replaceInSection(src, "enb", "enb_id", cfg.ENBID)
-	}
-	if _, ok := keys["mcc"]; ok {
-		src = replaceInSection(src, "enb", "mcc", cfg.MCC)
-	}
-	if _, ok := keys["mnc"]; ok {
-		src = replaceInSection(src, "enb", "mnc", cfg.MNC)
-	}
-	if _, ok := keys["mme_addr"]; ok {
-		src = replaceInSection(src, "enb", "mme_addr", cfg.MMEAddr)
-	}
-	if _, ok := keys["gtp_bind_addr"]; ok {
-		src = replaceInSection(src, "enb", "gtp_bind_addr", cfg.GTPBindAddr)
-	}
-	if _, ok := keys["s1c_bind_addr"]; ok {
-		src = replaceInSection(src, "enb", "s1c_bind_addr", cfg.S1CBindAddr)
-	}
-	if _, ok := keys["s1c_bind_port"]; ok {
-		src = replaceInSection(src, "enb", "s1c_bind_port", strconv.FormatUint(uint64(cfg.S1CBindPort), 10))
-	}
-	if _, ok := keys["n_prb"]; ok {
-		src = replaceInSection(src, "enb", "n_prb", strconv.FormatUint(uint64(cfg.NPRB), 10))
-	}
-	if _, ok := keys["tm"]; ok {
-		src = replaceInSection(src, "enb", "tm", strconv.FormatUint(uint64(cfg.TM), 10))
-	}
-
-	if _, ok := keys["tx_gain"]; ok {
-		src = replaceInSection(src, "rf", "tx_gain", trimFloat(cfg.TXGain))
-	}
-	if _, ok := keys["rx_gain"]; ok {
-		src = replaceInSection(src, "rf", "rx_gain", trimFloat(cfg.RXGain))
-	}
-	if _, ok := keys["device_name"]; ok && strings.TrimSpace(cfg.DeviceName) != "" {
-		src = replaceInSection(src, "rf", "device_name", cfg.DeviceName)
-	}
-	if _, ok := keys["device_args"]; ok && strings.TrimSpace(cfg.DeviceArgs) != "" {
-		src = replaceInSection(src, "rf", "device_args", cfg.DeviceArgs)
-	}
-	if _, ok := keys["time_adv_nsamples"]; ok && strings.TrimSpace(cfg.TimeAdvNSamples) != "" {
-		src = replaceInSection(src, "rf", "time_adv_nsamples", cfg.TimeAdvNSamples)
-	}
-
-	if _, ok := keys["sched_policy"]; ok && strings.TrimSpace(cfg.SchedPolicy) != "" {
-		src = replaceInSection(src, "scheduler", "policy", cfg.SchedPolicy)
-	}
-	if _, ok := keys["pdsch_max_mcs"]; ok {
-		src = replaceInSection(src, "scheduler", "pdsch_max_mcs", strconv.FormatInt(int64(cfg.PDSCHMaxMCS), 10))
-	}
-	if _, ok := keys["pusch_max_mcs"]; ok {
-		src = replaceInSection(src, "scheduler", "pusch_max_mcs", strconv.FormatInt(int64(cfg.PUSCHMaxMCS), 10))
-	}
-	if _, ok := keys["target_bler"]; ok {
-		src = replaceInSection(src, "scheduler", "target_bler", trimFloat(cfg.TargetBLER))
-	}
-	if _, ok := keys["min_nof_ctrl_symbols"]; ok {
-		src = replaceInSection(src, "scheduler", "min_nof_ctrl_symbols", strconv.FormatInt(int64(cfg.MinCtrlSymbols), 10))
-	}
-	if _, ok := keys["max_nof_ctrl_symbols"]; ok {
-		src = replaceInSection(src, "scheduler", "max_nof_ctrl_symbols", strconv.FormatInt(int64(cfg.MaxCtrlSymbols), 10))
-	}
-
-	if _, ok := keys["pusch_max_its"]; ok {
-		src = replaceInSection(src, "expert", "pusch_max_its", strconv.FormatInt(int64(cfg.PUSCHMaxIts), 10))
-	}
-	if _, ok := keys["nr_pusch_max_its"]; ok {
-		src = replaceInSection(src, "expert", "nr_pusch_max_its", strconv.FormatInt(int64(cfg.NRPUSCHMaxIts), 10))
-	}
-	if _, ok := keys["pusch_8bit_decoder"]; ok {
-		src = replaceInSection(src, "expert", "pusch_8bit_decoder", strconv.FormatBool(cfg.PUSCH8bitDecoder))
-	}
-	if _, ok := keys["nof_phy_threads"]; ok {
-		src = replaceInSection(src, "expert", "nof_phy_threads", strconv.FormatInt(int64(cfg.NofPHYThreads), 10))
-	}
-	if _, ok := keys["metrics_period_secs"]; ok {
-		src = replaceInSection(src, "expert", "metrics_period_secs", strconv.FormatInt(int64(cfg.MetricsPeriodSecs), 10))
-	}
-	if _, ok := keys["tx_amplitude"]; ok {
-		src = replaceInSection(src, "expert", "tx_amplitude", trimFloat(cfg.TXAmplitude))
-	}
-	if _, ok := keys["rrc_inactivity_timer"]; ok {
-		src = replaceInSection(src, "expert", "rrc_inactivity_timer", strconv.FormatInt(int64(cfg.RRCInactivityTimer), 10))
-	}
-	if _, ok := keys["rlf_release_timer_ms"]; ok {
-		src = replaceInSection(src, "expert", "rlf_release_timer_ms", strconv.FormatInt(int64(cfg.RLFReleaseTimerMs), 10))
-	}
-	if _, ok := keys["eea_pref_list"]; ok && strings.TrimSpace(cfg.EEAPrefList) != "" {
-		src = replaceInSection(src, "expert", "eea_pref_list", cfg.EEAPrefList)
-	}
-	if _, ok := keys["eia_pref_list"]; ok && strings.TrimSpace(cfg.EIAPrefList) != "" {
-		src = replaceInSection(src, "expert", "eia_pref_list", cfg.EIAPrefList)
-	}
-	if _, ok := keys["gtpu_tunnel_timeout"]; ok {
-		src = replaceInSection(src, "expert", "gtpu_tunnel_timeout", strconv.FormatInt(int64(cfg.GTPUTunnelTimeout), 10))
-	}
-	if _, ok := keys["s1_setup_max_retries"]; ok {
-		src = replaceInSection(src, "expert", "s1_setup_max_retries", strconv.FormatInt(int64(cfg.S1SetupMaxRetries), 10))
-	}
-	if _, ok := keys["s1_connect_timer"]; ok {
-		src = replaceInSection(src, "expert", "s1_connect_timer", strconv.FormatInt(int64(cfg.S1ConnectTimer), 10))
-	}
-	if _, ok := keys["rx_gain_offset"]; ok {
-		src = replaceInSection(src, "expert", "rx_gain_offset", trimFloat(cfg.RXGainOffset))
-	}
-	if _, ok := keys["use_cedron_f_est_alg"]; ok {
-		src = replaceInSection(src, "expert", "use_cedron_f_est_alg", strconv.FormatBool(cfg.UseCedronFEstAlg))
-	}
-	if _, ok := keys["rlf_min_ul_snr_estim"]; ok {
-		src = replaceInSection(src, "expert", "rlf_min_ul_snr_estim", trimFloat(cfg.RLFMinULSNREstim))
-	}
-	if _, ok := keys["max_mac_dl_kos"]; ok {
-		src = replaceInSection(src, "expert", "max_mac_dl_kos", strconv.FormatInt(int64(cfg.MaxMacDLKOs), 10))
-	}
-	if _, ok := keys["max_mac_ul_kos"]; ok {
-		src = replaceInSection(src, "expert", "max_mac_ul_kos", strconv.FormatInt(int64(cfg.MaxMacULKOs), 10))
-	}
-	if _, ok := keys["enb_serial"]; ok {
-		src = replaceInSection(src, "expert", "enb_serial", cfg.ENBSerial)
-	}
-	return atomicWrite(path, []byte(src))
-}
-
-func writeRRConfig(path string, cfg EditableConfig, keys map[string]struct{}) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	src := string(b)
-	if _, ok := keys["cell_id"]; ok {
-		src = replaceFirstKey(src, "cell_id", cfg.CellID)
-	}
-	if _, ok := keys["tac"]; ok {
-		src = replaceFirstKey(src, "tac", cfg.TAC)
-	}
-	if _, ok := keys["dl_earfcn"]; ok {
-		src = replaceFirstKey(src, "dl_earfcn", strconv.FormatUint(uint64(cfg.DLEARFCN), 10))
-	}
-	if _, ok := keys["pci"]; ok {
-		src = replaceFirstKey(src, "pci", strconv.FormatUint(uint64(cfg.PCI), 10))
-	}
-	if _, ok := keys["ho_active"]; ok {
-		src = replaceFirstKey(src, "ho_active", strconv.FormatBool(cfg.HOActive))
-	}
-	if _, ok := keys["a3_offset"]; ok {
-		src = replaceFirstKey(src, "a3_offset", strconv.FormatInt(int64(cfg.A3Offset), 10))
-	}
-	if _, ok := keys["time_to_trigger"]; ok {
-		src = replaceFirstKey(src, "time_to_trigger", strconv.FormatInt(int64(cfg.TimeToTrigger), 10))
-	}
-	if _, ok := keys["hysteresis"]; ok {
-		src = replaceFirstKey(src, "hysteresis", strconv.FormatInt(int64(cfg.Hysteresis), 10))
-	}
-	return atomicWrite(path, []byte(src))
-}
-
-func writeSIBConfig(path string, cfg EditableConfig, keys map[string]struct{}) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	src := string(b)
-
-	// sib1
-	if _, ok := keys["q_rx_lev_min"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib1", "q_rx_lev_min", strconv.FormatInt(int64(cfg.QRxLevMin), 10))
-	}
-	if _, ok := keys["cell_barred"]; ok && strings.TrimSpace(cfg.CellBarred) != "" {
-		src = replaceKVInNamedBraceBlock(src, "sib1", "cell_barred", fmt.Sprintf("%q", cfg.CellBarred))
-	}
-
-	// sib2 -> rach_cnfg
-	if _, ok := keys["num_ra_preambles"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "num_ra_preambles", strconv.FormatInt(int64(cfg.NumRAPreambles), 10))
-	}
-	if _, ok := keys["preamble_init_rx_target_pwr"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "preamble_init_rx_target_pwr", strconv.FormatInt(int64(cfg.PreambleInitRxTargetPwr), 10))
-	}
-	if _, ok := keys["pwr_ramping_step"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "pwr_ramping_step", strconv.FormatInt(int64(cfg.PwrRampingStep), 10))
-	}
-
-	// sib2 -> pdsch_cnfg (rs_power)
-	if _, ok := keys["reference_signal_power"]; ok && cfg.ReferenceSignalPower != 0 {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "rs_power", strconv.FormatInt(int64(cfg.ReferenceSignalPower), 10))
-	}
-
-	// sib2 -> pcch_cnfg
-	if _, ok := keys["default_paging_cycle"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "default_paging_cycle", strconv.FormatInt(int64(cfg.DefaultPagingCycle), 10))
-	}
-
-	// sib2 -> ul_pwr_ctrl
-	if _, ok := keys["p0_nominal_pusch"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "p0_nominal_pusch", strconv.FormatInt(int64(cfg.P0NominalPUSCH), 10))
-	}
-	if _, ok := keys["p0_nominal_pucch"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "p0_nominal_pucch", strconv.FormatInt(int64(cfg.P0NominalPUCCH), 10))
-	}
-	if _, ok := keys["alpha"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "alpha", trimFloat(cfg.Alpha))
-	}
-
-	// timers
-	if _, ok := keys["t300"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "t300", strconv.FormatInt(int64(cfg.T300), 10))
-	}
-	if _, ok := keys["t301"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "t301", strconv.FormatInt(int64(cfg.T301), 10))
-	}
-	if _, ok := keys["t310"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "t310", strconv.FormatInt(int64(cfg.T310), 10))
-	}
-	if _, ok := keys["n310"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "n310", strconv.FormatInt(int64(cfg.N310), 10))
-	}
-	if _, ok := keys["t311"]; ok {
-		src = replaceKVInNamedBraceBlock(src, "sib2", "t311", strconv.FormatInt(int64(cfg.T311), 10))
-	}
-
-	return atomicWrite(path, []byte(src))
-}
-
-func writeRBConfig(path string, cfg EditableConfig, keys map[string]struct{}) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	src := string(b)
-
-	edited := false
-	for k := range keys {
-		if strings.HasPrefix(k, "qci_profiles[") {
-			edited = true
-			break
+func isFixedDigits(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
 		}
 	}
-	if edited {
-		src = upsertRBQCIProfiles(src, cfg.QCIProfiles)
-	}
-	return atomicWrite(path, []byte(src))
-}
-
-func upsertRBQCIProfiles(src string, profiles []QCIProfile) string {
-	if len(profiles) == 0 {
-		return src
-	}
-	anchor := "qci_config"
-	idx := strings.Index(src, anchor)
-	if idx < 0 {
-		return src
-	}
-	pIdx := strings.Index(src[idx:], "(")
-	if pIdx < 0 {
-		return src
-	}
-	pIdx = idx + pIdx
-	section, endIdx, ok := extractParenSpan(src, pIdx)
-	if !ok {
-		return src
-	}
-
-	type span struct {
-		start, end int
-		qci        int32
-	}
-	spans := []span{}
-	// Scan section for top-level objects.
-	depth := 0
-	objStart := -1
-	for i := 0; i < len(section); i++ {
-		switch section[i] {
-		case '{':
-			depth++
-			if depth == 1 {
-				objStart = i
-			}
-		case '}':
-			if depth == 1 && objStart >= 0 {
-				obj := section[objStart : i+1]
-				qci := parseQCIFromRBObject(obj)
-				spans = append(spans, span{start: objStart, end: i + 1, qci: qci})
-				objStart = -1
-			}
-			if depth > 0 {
-				depth--
-			}
-		}
-	}
-
-	updated := section
-	for i := len(spans) - 1; i >= 0; i-- {
-		sp := spans[i]
-		if sp.qci == 0 {
-			continue
-		}
-		var desired *QCIProfile
-		for j := range profiles {
-			if profiles[j].QCI == sp.qci {
-				desired = &profiles[j]
-				break
-			}
-		}
-		if desired == nil {
-			continue
-		}
-		obj := updated[sp.start:sp.end]
-		obj = replaceFirstKey(obj, "discard_timer", strconv.FormatInt(int64(desired.DiscardTimer), 10))
-		if desired.PDCPSNSize != 0 {
-			obj = replaceFirstKey(obj, "pdcp_sn_size", strconv.FormatInt(int64(desired.PDCPSNSize), 10))
-		}
-		if desired.TPollRetx != 0 {
-			obj = replaceFirstKey(obj, "t_poll_retx", strconv.FormatInt(int64(desired.TPollRetx), 10))
-		}
-		if desired.MaxRetxThresh != 0 {
-			obj = replaceFirstKey(obj, "max_retx_thresh", strconv.FormatInt(int64(desired.MaxRetxThresh), 10))
-		}
-		if desired.TReordering != 0 {
-			obj = replaceFirstKey(obj, "t_reordering", strconv.FormatInt(int64(desired.TReordering), 10))
-		}
-		if desired.Priority != 0 {
-			obj = replaceFirstKey(obj, "priority", strconv.FormatInt(int64(desired.Priority), 10))
-		}
-		updated = updated[:sp.start] + obj + updated[sp.end:]
-	}
-
-	for _, p := range profiles {
-		found := false
-		for _, sp := range spans {
-			if sp.qci == p.QCI {
-				found = true
-				break
-			}
-		}
-		if found {
-			continue
-		}
-		ins := fmt.Sprintf("\n{\n  qci = %d;\n  pdcp_config = { discard_timer = %d; pdcp_sn_size = %d; };\n  logical_channel_config = { priority = %d; };\n},\n",
-			p.QCI, p.DiscardTimer, p.PDCPSNSize, p.Priority)
-		if k := strings.LastIndex(updated, ")"); k > 0 {
-			updated = updated[:k] + ins + updated[k:]
-		}
-	}
-
-	return src[:pIdx] + updated + src[endIdx:]
-}
-
-func parseQCIFromRBObject(obj string) int32 {
-	re := regexp.MustCompile(`(?m)^\s*qci\s*=\s*([0-9]+)\s*;`)
-	m := re.FindStringSubmatch(obj)
-	if len(m) != 2 {
-		return 0
-	}
-	v, err := strconv.ParseInt(m[1], 10, 32)
-	if err != nil {
-		return 0
-	}
-	return int32(v)
-}
-
-func extractParenSpan(src string, parenIdx int) (section string, endIdx int, ok bool) {
-	if parenIdx < 0 || parenIdx >= len(src) || src[parenIdx] != '(' {
-		return "", 0, false
-	}
-	depth := 0
-	for i := parenIdx; i < len(src); i++ {
-		switch src[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return src[parenIdx : i+1], i + 1, true
-			}
-		}
-	}
-	return "", 0, false
-}
-
-func replaceInSection(src, section, key, value string) string {
-	lines := strings.Split(src, "\n")
-	current := ""
-	reSection := regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
-	reKey := regexp.MustCompile(`^(\s*` + regexp.QuoteMeta(key) + `\s*=\s*)([^#;]*)(.*)$`)
-	for i, line := range lines {
-		if m := reSection.FindStringSubmatch(line); len(m) == 2 {
-			current = strings.ToLower(strings.TrimSpace(m[1]))
-			continue
-		}
-		if current != strings.ToLower(section) {
-			continue
-		}
-		if m := reKey.FindStringSubmatch(line); len(m) == 4 {
-			lines[i] = m[1] + value + m[3]
-			return strings.Join(lines, "\n")
-		}
-	}
-	return src
-}
-
-func replaceFirstKey(src, key, value string) string {
-	lines := strings.Split(src, "\n")
-	reKey := regexp.MustCompile(`^(\s*` + regexp.QuoteMeta(key) + `\s*=\s*)([^;#]*)(.*)$`)
-	for i, line := range lines {
-		if m := reKey.FindStringSubmatch(line); len(m) == 4 {
-			lines[i] = m[1] + value + m[3]
-			return strings.Join(lines, "\n")
-		}
-	}
-	return src
-}
-
-func replaceKVInNamedBraceBlock(src, blockName, key, value string) string {
-	idx := strings.Index(src, blockName)
-	if idx < 0 {
-		return src
-	}
-	br := strings.Index(src[idx:], "{")
-	if br < 0 {
-		return src
-	}
-	br = idx + br
-	block, end, ok := extractBraceBlockSpan(src, br)
-	if !ok {
-		return src
-	}
-	block2 := replaceFirstKey(block, key, value)
-	return src[:br] + block2 + src[end:]
-}
-
-func replaceKVInFirstBraceAfter(src, anchor, key, value string) string {
-	idx := strings.Index(src, anchor)
-	if idx < 0 {
-		return src
-	}
-	br := strings.Index(src[idx:], "{")
-	if br < 0 {
-		return src
-	}
-	br = idx + br
-	block, end, ok := extractBraceBlockSpan(src, br)
-	if !ok {
-		return src
-	}
-	block2 := replaceFirstKey(block, key, value)
-	return src[:br] + block2 + src[end:]
-}
-
-func extractBraceBlockSpan(src string, braceIdx int) (block string, endIdx int, ok bool) {
-	if braceIdx < 0 || braceIdx >= len(src) || src[braceIdx] != '{' {
-		return "", 0, false
-	}
-	depth := 0
-	for i := braceIdx; i < len(src); i++ {
-		switch src[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return src[braceIdx : i+1], i + 1, true
-			}
-		}
-	}
-	return "", 0, false
+	return true
 }
 
 func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".cfg-*")
+	tmpName, err := writeTempSibling(path, data)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+	if err := renameAtomic(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		if errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.EPERM) {
-			return writeInPlace(path, data)
-		}
 		return err
 	}
 	return nil
 }
 
-func writeInPlace(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+func writeTempSibling(path string, data []byte) (string, error) {
+	dir := filepath.Dir(path)
+	mode := os.FileMode(0o644)
+	uid := -1
+	gid := -1
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
+		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+			uid = int(sys.Uid)
+			gid = int(sys.Gid)
+		}
+	}
+	tmp, err := os.CreateTemp(dir, ".cfg-*")
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return err
+	tmpName := tmp.Name()
+	if uid >= 0 && gid >= 0 {
+		if err := os.Chown(tmpName, uid, gid); err != nil && !errors.Is(err, syscall.EPERM) {
+			tmp.Close()
+			_ = os.Remove(tmpName)
+			return "", err
+		}
 	}
-	if err := f.Sync(); err != nil {
-		return err
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	return tmpName, nil
+}
+
+func commitStagedFiles(staged []stagedFile) error {
+	if len(staged) == 0 {
+		return nil
+	}
+	applied := make([]stagedFile, 0, len(staged))
+	for _, f := range staged {
+		if err := renameAtomic(f.tmp, f.final); err != nil {
+			for i := len(applied) - 1; i >= 0; i-- {
+				_ = os.Remove(applied[i].tmp)
+			}
+			return err
+		}
+		applied = append(applied, f)
 	}
 	return nil
+}
+
+func cleanupStagedFiles(staged []stagedFile) error {
+	var first error
+	for _, f := range staged {
+		if err := os.Remove(f.tmp); err != nil && !os.IsNotExist(err) && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func renameAtomic(tmp, final string) error {
+	if err := os.Rename(tmp, final); err != nil {
+		if errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.EPERM) {
+			return fmt.Errorf("atomic rename %s -> %s failed: %w (mount the parent directory instead of bind-mounting the file)", tmp, final, err)
+		}
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(final))
+	if err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func asString(v any) (string, bool) {

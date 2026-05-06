@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"lte-element-manager/internal/ems/domain"
 	"lte-element-manager/internal/ems/domain/canonical"
+	domainpm "lte-element-manager/internal/ems/domain/pm"
 	"lte-element-manager/internal/ems/mediation"
 	emserrors "lte-element-manager/internal/errors"
 )
@@ -80,12 +82,21 @@ func mapNode(tsMillis int64, sourceID string, m *domain.EnbMetrics) canonical.Sa
 		},
 	}
 
+	ready := 0.0
+	if strings.EqualFold(strings.TrimSpace(m.S1AP.Status), "ready") || m.S1AP.StatusCode == 1 {
+		ready = 1
+	}
+	putGauge(s.Metrics, domainpm.CanonicalS1APReady, "boolean", ready)
 	putGauge(s.Metrics, KeyS1APStatusCode, "count", float64(m.S1AP.StatusCode))
 
 	for k, v := range m.S1AP.Counters {
 		putCounter(s.Metrics, "s1ap."+k, "count", float64(v))
 	}
 	for k, v := range m.RRC.Counters {
+		if k == "rrc_connected_ues" {
+			putGauge(s.Metrics, KeyRRCConnectedUES, "count", float64(v))
+			continue
+		}
 		putCounter(s.Metrics, "rrc."+k, "count", float64(v))
 	}
 
@@ -132,6 +143,11 @@ func mapUE(tsMillis int64, sourceID, cellID string, u domain.UEContainer) canoni
 	}
 
 	mediation.ApplyFieldRules(s.Metrics, u, UEFieldRules)
+	inactivityRelease := 0.0
+	if strings.EqualFold(strings.TrimSpace(u.RRCReleaseCause), "inactivity") {
+		inactivityRelease = 1
+	}
+	putGauge(s.Metrics, domainpm.CanonicalUERRCInactivity, "boolean", inactivityRelease)
 
 	for _, b := range u.BearerList {
 		m := make(map[string]canonical.Metric, 8)

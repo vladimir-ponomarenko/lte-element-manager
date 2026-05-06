@@ -198,14 +198,17 @@ func buildMeasurements(src map[string]pm.Value) *measurements {
 		switch def.Leaf {
 		case domainpm.LeafThroughputDL:
 			out.ThroughputDL = val
+			seen = true
 		case domainpm.LeafThroughputUL:
 			out.ThroughputUL = val
+			seen = true
 		case domainpm.LeafSINRUL:
 			out.SINRUL = val
+			seen = true
 		case domainpm.LeafCQIDL:
 			out.CQIDL = val
+			seen = true
 		}
-		seen = true
 	}
 	if !seen {
 		return nil

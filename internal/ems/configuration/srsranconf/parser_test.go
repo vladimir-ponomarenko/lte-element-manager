@@ -17,6 +17,7 @@ n_prb = 50
 
 [rf]
 tx_gain = 80
+device_args = fail_on_disconnect=false,trx_timeout_ms=3000,id=enb1,tx_port=tcp://*:2000,rx_port=tcp://srsue:2001,base_srate=23.04e6
 
 [expert]
 enb_serial = ENB-0x19A-001-01-SibSutis&Yadro
@@ -31,6 +32,9 @@ enb_serial = ENB-0x19A-001-01-SibSutis&Yadro
 	}
 	if cfg.Serial == "" || cfg.MCC != "001" || cfg.MNC != "01" || cfg.NPRB != 50 || cfg.TXGain != 80 {
 		t.Fatalf("unexpected cfg: %+v", cfg)
+	}
+	if cfg.DeviceArgs != "fail_on_disconnect=false,trx_timeout_ms=3000,id=enb1,tx_port=tcp://*:2000,rx_port=tcp://srsue:2001,base_srate=23.04e6" {
+		t.Fatalf("device_args was parsed as comment-truncated value: %q", cfg.DeviceArgs)
 	}
 }
 

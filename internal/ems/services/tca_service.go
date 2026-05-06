@@ -2,41 +2,38 @@ package services
 
 import (
 	"context"
-	"time"
 
 	"github.com/rs/zerolog"
 
 	"lte-element-manager/internal/ems/bus"
-	"lte-element-manager/internal/ems/domain/pm"
 	"lte-element-manager/internal/ems/fcaps/alarms"
 	pmfcaps "lte-element-manager/internal/ems/fcaps/pm"
+	"lte-element-manager/internal/ems/fcaps/tca"
 )
 
 type TCAService struct {
-	Bus      *bus.Bus
-	Manager  *alarms.Manager
-	Log      zerolog.Logger
-	Duration time.Duration
-
-	lowSince map[string]time.Time
+	Bus     *bus.Bus
+	Manager *alarms.Manager
+	Engine  *tca.Engine
+	Log     zerolog.Logger
 }
 
-func NewTCAService(b *bus.Bus, manager *alarms.Manager, log zerolog.Logger) *TCAService {
+func NewTCAService(b *bus.Bus, manager *alarms.Manager, cfg tca.Config, log zerolog.Logger) *TCAService {
 	return &TCAService{
-		Bus:      b,
-		Manager:  manager,
-		Log:      log,
-		Duration: 3 * time.Minute,
-		lowSince: make(map[string]time.Time),
+		Bus:     b,
+		Manager: manager,
+		Engine:  tca.NewEngine(manager, cfg, log),
+		Log:     log,
 	}
 }
 
 func (s *TCAService) Name() string { return "tca" }
 
 func (s *TCAService) Run(ctx context.Context) error {
-	if s.Bus == nil || s.Manager == nil {
+	if s.Bus == nil || s.Manager == nil || s.Engine == nil || !s.Engine.Enabled() {
 		return nil
 	}
+	s.Log.Info().Msg("tca service enabled")
 	sub := s.Bus.Subscribe(ctx)
 	for {
 		select {
@@ -47,41 +44,10 @@ func (s *TCAService) Run(ctx context.Context) error {
 				return nil
 			}
 			if ev, ok := msg.(pmfcaps.Event); ok {
-				s.evaluateReport(ev.Report)
+				for _, alarmEvent := range s.Engine.Evaluate(ev.Report) {
+					s.Bus.Publish(alarmEvent)
+				}
 			}
-		}
-	}
-}
-
-func (s *TCAService) evaluateReport(report pmfcaps.Report) {
-	now := report.End
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	for dn, values := range report.ByDN {
-		dl, hasDL := values[pm.CanonicalUEDLBitrate]
-		ul, hasUL := values[pm.CanonicalUEULBitrate]
-		if !hasDL && !hasUL {
-			continue
-		}
-		total := dl.Value + ul.Value
-		key := string(dn)
-		if total > 0 {
-			delete(s.lowSince, key)
-			continue
-		}
-		start, ok := s.lowSince[key]
-		if !ok {
-			s.lowSince[key] = now
-			continue
-		}
-		if now.Sub(start) < s.Duration {
-			continue
-		}
-		alarm := alarms.NewThresholdAlarm(alarms.AlarmLowThroughput, key, "DL/UL throughput remained zero", total)
-		evt, changed := s.Manager.Raise(now, "pm", "degraded", alarm)
-		if changed && s.Bus != nil {
-			s.Bus.Publish(evt)
 		}
 	}
 }

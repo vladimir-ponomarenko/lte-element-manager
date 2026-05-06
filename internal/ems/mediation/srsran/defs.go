@@ -6,7 +6,8 @@ import (
 )
 
 const (
-	KeyS1APStatusCode = "s1ap.status_code"
+	KeyS1APStatusCode  = "s1ap.status_code"
+	KeyRRCConnectedUES = "rrc.rrc_connected_ues"
 
 	KeyCellNoFRACH = "cell.nof_rach"
 
@@ -29,6 +30,7 @@ const (
 	KeyUERRCState    = "ue.rrc_state"
 	KeyUERRCDRBCount = "ue.rrc_drb_count"
 	KeyUERRCNoFCells = "ue.rrc_nof_cells"
+	KeyUERRCRLFCnt   = "ue.rrc_rlf_cnt"
 )
 
 var UEFieldRules = []mediation.FieldRule{
@@ -50,6 +52,7 @@ var UEFieldRules = []mediation.FieldRule{
 	{JSONTag: "rrc_state", Key: KeyUERRCState, Type: canonical.Gauge, Unit: "count"},
 	{JSONTag: "rrc_drb_count", Key: KeyUERRCDRBCount, Type: canonical.Gauge, Unit: "count"},
 	{JSONTag: "rrc_nof_cells", Key: KeyUERRCNoFCells, Type: canonical.Gauge, Unit: "count"},
+	{JSONTag: "rrc_rlf_cnt", Key: KeyUERRCRLFCnt, Type: canonical.Counter, Unit: "count"},
 }
 
 var BearerFieldRules = []mediation.FieldRule{

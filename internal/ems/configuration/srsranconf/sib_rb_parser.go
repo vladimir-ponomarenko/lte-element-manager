@@ -3,7 +3,6 @@ package srsranconf
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -50,10 +49,6 @@ type QCIProfile struct {
 	TReordering   int32
 	Priority      int32
 }
-
-var (
-	reAnyKV = regexp.MustCompile(`(?i)([A-Za-z0-9_]+)\s*=\s*(.*?)\s*;`)
-)
 
 func ParseSIB(path string) (SIBConfig, error) {
 	raw, err := os.ReadFile(path)
@@ -143,73 +138,59 @@ func ParseRB(path string) (RBConfig, error) {
 }
 
 func extractParenSectionAfter(src, anchor string) (string, bool) {
-	idx := strings.Index(src, anchor)
-	if idx < 0 {
+	asn, ok := findAssignmentInText(src, anchor, 0)
+	if !ok {
 		return "", false
 	}
-	p := strings.Index(src[idx:], "(")
-	if p < 0 {
+	p := skipTextSpace(src, asn.valueStart)
+	if p >= len(src) || src[p] != '(' {
 		return "", false
 	}
-	p = idx + p
-	depth := 0
-	for i := p; i < len(src); i++ {
-		switch src[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return src[p : i+1], true
-			}
-		}
+	end, ok := findMatchingDelimiter(src, p, '(', ')')
+	if !ok {
+		return "", false
 	}
-	return "", false
+	return src[p : end+1], true
 }
 
 func extractTopLevelBraceObjects(section string) []string {
 	// ( { ... }, { ... } );
 	out := []string{}
-	// Find first '{'
-	start := strings.Index(section, "{")
-	if start < 0 {
-		return out
-	}
-	i := start
-	depth := 0
-	objStart := -1
-	for i < len(section) {
-		switch section[i] {
-		case '{':
-			depth++
-			if depth == 1 {
-				objStart = i
-			}
-		case '}':
-			if depth == 1 && objStart >= 0 {
-				out = append(out, section[objStart:i+1])
-				objStart = -1
-			}
-			if depth > 0 {
-				depth--
-			}
+	for i := 0; i < len(section); i++ {
+		if isTextLineCommentStart(section, i) {
+			i = skipTextLine(section, i)
+			continue
 		}
-		i++
+		if section[i] == '"' {
+			next, ok := skipTextString(section, i)
+			if !ok {
+				return out
+			}
+			i = next
+			continue
+		}
+		if section[i] != '{' {
+			continue
+		}
+		end, ok := findMatchingDelimiter(section, i, '{', '}')
+		if !ok {
+			return out
+		}
+		out = append(out, section[i:end+1])
+		i = end
 	}
 	return out
 }
 
 func extractNamedBlock(src, name string) (string, bool) {
-	// Matches: name = { ... };
-	idx := strings.Index(src, name)
-	if idx < 0 {
+	asn, ok := findAssignmentInText(src, name, 0)
+	if !ok {
 		return "", false
 	}
-	br := strings.Index(src[idx:], "{")
-	if br < 0 {
+	br := skipTextSpace(src, asn.valueStart)
+	if br >= len(src) || src[br] != '{' {
 		return "", false
 	}
-	br = idx + br
 	block, ok := extractBraceBlock(src, br)
 	return block, ok
 }
@@ -222,40 +203,23 @@ func extractBraceBlock(src string, braceIdx int) (string, bool) {
 	if braceIdx < 0 || braceIdx >= len(src) || src[braceIdx] != '{' {
 		return "", false
 	}
-	depth := 0
-	for i := braceIdx; i < len(src); i++ {
-		switch src[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return src[braceIdx : i+1], true
-			}
-		}
+	end, ok := findMatchingDelimiter(src, braceIdx, '{', '}')
+	if !ok {
+		return "", false
 	}
-	return "", false
+	return src[braceIdx : end+1], true
 }
 
 func findStringInBlock(block, key string) (string, bool) {
-	for _, m := range reAnyKV.FindAllStringSubmatch(block, -1) {
-		if len(m) != 3 {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(m[1]), key) {
-			v := strings.TrimSpace(m[2])
-			v = strings.Trim(v, `"`)
-			return v, true
-		}
+	asn, ok := findAssignmentInText(block, key, 0)
+	if !ok {
+		return "", false
 	}
-
-	reLoose := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(key) + `\b\s*=\s*([^;\n}]+)`)
-	if m := reLoose.FindStringSubmatch(block); len(m) == 2 {
-		v := strings.TrimSpace(m[1])
-		v = strings.Trim(v, `"`)
-		return v, true
+	valueEnd, ok := findTextScalarValueEnd(block, asn.valueStart)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	return unquoteScalar(block[asn.valueStart:valueEnd]), true
 }
 
 func findInt32InBlock(block, key string) (int32, bool) {
@@ -274,4 +238,163 @@ func findFloat64InBlock(block, key string) (float64, bool) {
 	}
 	fv, err := strconv.ParseFloat(s, 64)
 	return fv, err == nil
+}
+
+type textAssignment struct {
+	valueStart int
+}
+
+func findAssignmentInText(src, key string, from int) (textAssignment, bool) {
+	if from < 0 {
+		from = 0
+	}
+	for i := from; i < len(src); i++ {
+		if isTextLineCommentStart(src, i) {
+			i = skipTextLine(src, i)
+			continue
+		}
+		if src[i] == '"' {
+			next, ok := skipTextString(src, i)
+			if !ok {
+				return textAssignment{}, false
+			}
+			i = next
+			continue
+		}
+		if !isIdentifierStart(src[i]) {
+			continue
+		}
+		start := i
+		for i < len(src) && isIdentifier(src[i]) {
+			i++
+		}
+		token := src[start:i]
+		j := skipTextSpace(src, i)
+		if strings.EqualFold(token, key) && j < len(src) && src[j] == '=' {
+			return textAssignment{valueStart: skipTextSpace(src, j+1)}, true
+		}
+		i--
+	}
+	return textAssignment{}, false
+}
+
+func findTextScalarValueEnd(src string, from int) (int, bool) {
+	for i := from; i < len(src); i++ {
+		if isTextLineCommentStart(src, i) {
+			return trimTextRight(src, from, i), true
+		}
+		if src[i] == '"' {
+			next, ok := skipTextString(src, i)
+			if !ok {
+				return 0, false
+			}
+			i = next
+			continue
+		}
+		switch src[i] {
+		case ';', '\n', '\r':
+			return trimTextRight(src, from, i), true
+		case '{', '}', '(', ')':
+			return 0, false
+		}
+	}
+	return trimTextRight(src, from, len(src)), true
+}
+
+func findMatchingDelimiter(src string, open int, openCh, closeCh byte) (int, bool) {
+	depth := 0
+	for i := open; i < len(src); i++ {
+		if isTextLineCommentStart(src, i) {
+			i = skipTextLine(src, i)
+			continue
+		}
+		if src[i] == '"' {
+			next, ok := skipTextString(src, i)
+			if !ok {
+				return 0, false
+			}
+			i = next
+			continue
+		}
+		switch src[i] {
+		case openCh:
+			depth++
+		case closeCh:
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func skipTextSpace(src string, i int) int {
+	for i < len(src) {
+		switch src[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+func trimTextRight(src string, start, end int) int {
+	for end > start {
+		switch src[end-1] {
+		case ' ', '\t', '\r', '\n':
+			end--
+		default:
+			return end
+		}
+	}
+	return end
+}
+
+func isTextLineCommentStart(src string, i int) bool {
+	if i >= len(src) {
+		return false
+	}
+	if src[i] != '#' && !(src[i] == '/' && i+1 < len(src) && src[i+1] == '/') {
+		return false
+	}
+	if i == 0 {
+		return true
+	}
+	switch src[i-1] {
+	case ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
+}
+
+func skipTextLine(src string, i int) int {
+	for i < len(src) && src[i] != '\n' {
+		i++
+	}
+	return i
+}
+
+func skipTextString(src string, i int) (int, bool) {
+	if i >= len(src) || src[i] != '"' {
+		return i, false
+	}
+	escaped := false
+	for i++; i < len(src); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if src[i] == '\\' {
+			escaped = true
+			continue
+		}
+		if src[i] == '"' {
+			return i, true
+		}
+	}
+	return 0, false
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -25,6 +27,9 @@ type Manager struct {
 	locks      *lockManager
 	registry   *registry
 	log        zerolog.Logger
+
+	mu              sync.Mutex
+	lastEditSession uint64
 }
 
 func NewManager(yangDir string, ids IDs, artifacts ArtifactPaths, store *configuration.Store, supervisor worker.LifecycleSupervisor, resolve targetResolver, log zerolog.Logger) (*Manager, error) {
@@ -75,33 +80,38 @@ func (m *Manager) EditFlat(changes map[string]any) (*configuration.EditableConfi
 }
 
 func (m *Manager) EditConfig(req EditRequest) (*configuration.EditableConfig, error) {
-	if err := m.locks.ensure("candidate", req.SessionMeta); err != nil {
+	if err := m.locks.ensure("candidate", req.SessionMeta, ErrorTagInUse); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(req.Target) != "candidate" {
-		return nil, fmt.Errorf("only target candidate is supported")
+		return nil, NewRPCError(ErrorTagInvalidValue, "only target candidate is supported")
 	}
 	if err := validateEditOptions(req.DefaultOperation, req.TestOption, req.ErrorOption); err != nil {
-		return nil, err
+		return nil, NewRPCError(ErrorTagInvalidValue, err.Error())
 	}
-	changes, err := m.extractChanges(req.Payload)
+	changes, leafCount, err := m.extractChanges(req.Payload)
 	if err != nil {
 		return nil, err
 	}
+	if leafCount == 0 {
+		return nil, NewRPCError(ErrorTagInvalidValue, "no editable config true leaves found in edit-config payload")
+	}
 	if len(changes) == 0 {
-		return nil, fmt.Errorf("no editable config true leaves found in edit-config payload")
+		cfg := m.store.Candidate()
+		return &cfg, nil
 	}
 	if strings.TrimSpace(req.TestOption) == "test-only" {
 		cfg, err := m.store.PreviewEdit(changes)
 		if err != nil {
-			return nil, err
+			return nil, NewRPCError(ErrorTagInvalidValue, err.Error())
 		}
 		return &cfg, nil
 	}
 	cfg, err := m.store.Edit(changes)
 	if err != nil {
-		return nil, err
+		return nil, NewRPCError(ErrorTagInvalidValue, err.Error())
 	}
+	m.noteCandidateEdit(req.SessionID)
 	if err := m.RefreshArtifacts(); err != nil {
 		return nil, err
 	}
@@ -110,15 +120,21 @@ func (m *Manager) EditConfig(req EditRequest) (*configuration.EditableConfig, er
 
 func (m *Manager) Validate(req ValidateRequest) error {
 	if req.Payload != "" {
-		changes, err := m.extractChanges(req.Payload)
+		changes, leafCount, err := m.extractChanges(req.Payload)
 		if err != nil {
 			return err
 		}
+		if leafCount == 0 {
+			return NewRPCError(ErrorTagInvalidValue, "no editable config true leaves found in validate payload")
+		}
 		if len(changes) == 0 {
-			return fmt.Errorf("no editable config true leaves found in validate payload")
+			return nil
 		}
 		_, err = m.store.PreviewEdit(changes)
-		return err
+		if err != nil {
+			return NewRPCError(ErrorTagInvalidValue, err.Error())
+		}
+		return nil
 	}
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
@@ -126,17 +142,17 @@ func (m *Manager) Validate(req ValidateRequest) error {
 	}
 	switch source {
 	case "candidate":
-		if err := m.locks.ensure("candidate", req.SessionMeta); err != nil {
-			return err
+		if err := configuration.ValidateConfig(m.store.Candidate()); err != nil {
+			return NewRPCError(ErrorTagInvalidValue, err.Error())
 		}
-		return configuration.ValidateConfig(m.store.Candidate())
+		return nil
 	case "running":
-		if err := m.locks.ensure("running", req.SessionMeta); err != nil {
-			return err
+		if err := configuration.ValidateConfig(m.store.Running()); err != nil {
+			return NewRPCError(ErrorTagInvalidValue, err.Error())
 		}
-		return configuration.ValidateConfig(m.store.Running())
+		return nil
 	default:
-		return fmt.Errorf("unsupported validate source %q", source)
+		return NewRPCError(ErrorTagInvalidValue, fmt.Sprintf("unsupported validate source %q", source))
 	}
 }
 
@@ -145,14 +161,20 @@ func (m *Manager) Lock(req LockRequest) error {
 }
 
 func (m *Manager) Unlock(req LockRequest) error {
-	return m.locks.unlock(req.Target, req.SessionMeta)
+	if err := m.locks.unlock(req.Target, req.SessionMeta); err != nil {
+		return err
+	}
+	m.store.ResetCandidate()
+	m.clearCandidateEditOwner()
+	return m.RefreshArtifacts()
 }
 
 func (m *Manager) DiscardChanges(req SessionMeta) (*configuration.EditableConfig, error) {
-	if err := m.locks.ensure("candidate", req); err != nil {
+	if err := m.locks.ensure("candidate", req, ErrorTagInUse); err != nil {
 		return nil, err
 	}
 	m.store.ResetCandidate()
+	m.clearCandidateEditOwner()
 	if err := m.RefreshArtifacts(); err != nil {
 		return nil, err
 	}
@@ -161,38 +183,45 @@ func (m *Manager) DiscardChanges(req SessionMeta) (*configuration.EditableConfig
 }
 
 func (m *Manager) Commit(req CommitRequest) (*configuration.EditableConfig, error) {
-	if err := m.locks.ensure("candidate", req.SessionMeta); err != nil {
+	if err := m.locks.ensure("candidate", req.SessionMeta, ErrorTagInUse); err != nil {
 		return nil, err
 	}
-	if err := m.locks.ensure("running", req.SessionMeta); err != nil {
+	if err := m.locks.ensure("running", req.SessionMeta, ErrorTagLockDenied); err != nil {
 		return nil, err
 	}
 	if err := configuration.ValidateConfig(m.store.Candidate()); err != nil {
-		return nil, err
+		return nil, NewRPCError(ErrorTagInvalidValue, err.Error())
 	}
 
 	backup, next, err := m.store.PersistCandidate()
 	if err != nil {
-		return nil, err
+		return nil, NewRPCError(ErrorTagOperationFailed, err.Error())
 	}
+	needsRestart := backup != nil && backup.Dirty
 
 	serial := strings.TrimSpace(next.ENBSerial)
 	target, ok := "", false
 	if m.resolve != nil {
 		target, ok = m.resolve(serial)
 	}
-	if ok && strings.TrimSpace(target) != "" && m.supervisor != nil {
+	if needsRestart && ok && strings.TrimSpace(target) != "" && m.supervisor != nil {
 		if err := m.supervisor.TriggerRestart(context.Background(), target); err != nil {
 			_ = m.store.RollbackPersist(backup)
+			m.store.ResetCandidate()
+			m.clearCandidateEditOwner()
 			_ = m.RefreshArtifacts()
 			return nil, err
 		}
 	}
 	if err := m.store.FinalizeCommit(); err != nil {
 		_ = m.store.RollbackPersist(backup)
+		m.store.ResetCandidate()
+		m.clearCandidateEditOwner()
 		_ = m.RefreshArtifacts()
 		return nil, err
 	}
+	m.store.ResetCandidate()
+	m.clearCandidateEditOwner()
 	if err := m.RefreshArtifacts(); err != nil {
 		return nil, err
 	}
@@ -201,37 +230,114 @@ func (m *Manager) Commit(req CommitRequest) (*configuration.EditableConfig, erro
 }
 
 func (m *Manager) SessionClose(sessionID uint64) {
-	m.locks.releaseSession(sessionID)
+	if m.locks.releaseSession(sessionID) || m.consumeCandidateEditOwner(sessionID) {
+		m.store.ResetCandidate()
+		if err := m.RefreshArtifacts(); err != nil {
+			m.log.Warn().Err(err).Uint64("session_id", sessionID).Msg("failed to refresh artifacts after session close")
+		}
+	}
 }
 
-func (m *Manager) extractChanges(payload string) (map[string]any, error) {
+func (m *Manager) ResetSessions() {
+	m.locks.resetAll()
+	m.clearCandidateEditOwner()
+	m.store.ResetCandidate()
+	if err := m.RefreshArtifacts(); err != nil {
+		m.log.Warn().Err(err).Msg("failed to refresh artifacts after NETCONF session reset")
+	}
+}
+
+func (m *Manager) KeepAlive(sessions []SessionMeta) {
+	m.locks.keepAlive(sessions, time.Now())
+}
+
+func (m *Manager) SweepExpiredSessions(now time.Time) []uint64 {
+	expired, candidateExpired := m.locks.sweep(now)
+	if candidateExpired || m.expiredCandidateEditOwner(expired) {
+		m.store.ResetCandidate()
+		if err := m.RefreshArtifacts(); err != nil {
+			m.log.Warn().Err(err).Msg("failed to refresh artifacts after stale candidate lock cleanup")
+		}
+	}
+	for _, id := range expired {
+		m.log.Warn().Uint64("session_id", id).Msg("released stale NETCONF session lock")
+	}
+	return expired
+}
+
+func (m *Manager) noteCandidateEdit(sessionID uint64) {
+	if sessionID == 0 {
+		return
+	}
+	m.mu.Lock()
+	m.lastEditSession = sessionID
+	m.mu.Unlock()
+}
+
+func (m *Manager) clearCandidateEditOwner() {
+	m.mu.Lock()
+	m.lastEditSession = 0
+	m.mu.Unlock()
+}
+
+func (m *Manager) consumeCandidateEditOwner(sessionID uint64) bool {
+	if sessionID == 0 {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastEditSession != sessionID {
+		return false
+	}
+	m.lastEditSession = 0
+	return true
+}
+
+func (m *Manager) expiredCandidateEditOwner(expired []uint64) bool {
+	if len(expired) == 0 {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range expired {
+		if id != 0 && id == m.lastEditSession {
+			m.lastEditSession = 0
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) extractChanges(payload string) (map[string]any, int, error) {
 	payload = strings.TrimSpace(payload)
 	if payload == "" {
-		return nil, fmt.Errorf("payload is empty")
+		return nil, 0, NewRPCError(ErrorTagInvalidValue, "payload is empty")
 	}
 	if err := validateYANGJSON(m.yangDir, payload); err != nil {
-		return nil, err
+		return nil, 0, NewRPCError(ErrorTagInvalidValue, err.Error())
 	}
 	leaves, err := extractLeaves(m.yangDir, payload)
 	if err != nil {
-		return nil, err
+		return nil, 0, NewRPCError(ErrorTagInvalidValue, err.Error())
 	}
 	candidate := m.store.Candidate()
 	changes := make(map[string]any)
+	editableLeaves := 0
 	for _, leaf := range leaves {
 		key, value, structural, err := m.registry.resolve(leaf.Path, leaf.IsKey, leaf.Value)
 		if err != nil {
-			return nil, err
+			return nil, 0, NewRPCError(ErrorTagInvalidValue, err.Error())
 		}
 		if structural || key == "" {
 			continue
 		}
+		editableLeaves++
 		if current, ok := m.registry.currentValue(candidate, key); ok && valuesEqual(current, value) {
 			continue
 		}
 		changes[key] = value
 	}
-	return changes, nil
+	return changes, editableLeaves, nil
 }
 
 func (m *Manager) writeArtifact(path string, cfg configuration.EditableConfig) error {

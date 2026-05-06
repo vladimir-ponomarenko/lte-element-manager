@@ -41,6 +41,8 @@ usage(FILE *out)
             "  discard-changes\n"
             "  lock <running|candidate>\n"
             "  unlock <running|candidate>\n"
+            "  hold-lock <running|candidate> <seconds>\n"
+            "  interactive\n"
             "  subscribe [duration-sec]\n"
             "  sequence <xml-file|-> [commit|discard|no-commit]\n");
 }
@@ -365,6 +367,153 @@ run_subscribe(struct nc_session *session, int duration_sec, int timeout_ms)
     return 0;
 }
 
+static int
+run_hold_lock(struct nc_session *session, NC_DATASTORE ds, int duration_sec, int timeout_ms)
+{
+    int rc;
+
+    rc = send_named_rpc(session, nc_rpc_lock(ds), timeout_ms, "lock");
+    if (rc) {
+        return rc;
+    }
+    if (duration_sec < 0) {
+        duration_sec = 0;
+    }
+    fprintf(stderr, "[netconf-client] holding lock for %d seconds\n", duration_sec);
+    sleep((unsigned int)duration_sec);
+    return send_named_rpc(session, nc_rpc_unlock(ds), timeout_ms, "unlock");
+}
+
+static char *
+trim_line(char *line)
+{
+    char *end;
+
+    while (*line == ' ' || *line == '\t' || *line == '\n' || *line == '\r') {
+        ++line;
+    }
+    end = line + strlen(line);
+    while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+        *--end = '\0';
+    }
+    return line;
+}
+
+static int
+run_interactive(struct nc_session *session, int timeout_ms)
+{
+    char line[2048];
+    int rc = 0;
+
+    fprintf(stderr, "[netconf-client] interactive session started; type 'help' or 'quit'\n");
+    while (1) {
+        char *cmd, *arg1, *arg2, *saveptr = NULL;
+        struct nc_rpc *rpc = NULL;
+        char *edit_content = NULL;
+
+        fprintf(stderr, "netconf> ");
+        fflush(stderr);
+        if (!fgets(line, sizeof(line), stdin)) {
+            break;
+        }
+        cmd = trim_line(line);
+        if (!cmd[0]) {
+            continue;
+        }
+        if (!strcmp(cmd, "quit") || !strcmp(cmd, "exit")) {
+            break;
+        }
+        if (!strcmp(cmd, "help")) {
+            fprintf(stderr,
+                    "commands: get [xpath], get-config [running|candidate] [xpath], lock <ds>, unlock <ds>,\n"
+                    "          edit-config <ds> <xml-file>, validate [ds], commit, discard-changes,\n"
+                    "          sleep <seconds>, quit\n");
+            continue;
+        }
+
+        cmd = strtok_r(cmd, " \t", &saveptr);
+        arg1 = strtok_r(NULL, " \t", &saveptr);
+        arg2 = strtok_r(NULL, " \t", &saveptr);
+
+        if (!strcmp(cmd, "sleep")) {
+            int sec = arg1 ? (int)strtol(arg1, NULL, 10) : 1;
+            if (sec < 0) {
+                sec = 0;
+            }
+            sleep((unsigned int)sec);
+            continue;
+        } else if (!strcmp(cmd, "get")) {
+            rpc = nc_rpc_get(arg1, NC_WD_UNKNOWN, NC_PARAMTYPE_CONST);
+        } else if (!strcmp(cmd, "get-config")) {
+            NC_DATASTORE ds = NC_DATASTORE_RUNNING;
+            const char *filter = NULL;
+            if (arg1) {
+                NC_DATASTORE parsed = string2datastore(arg1);
+                if (parsed) {
+                    ds = parsed;
+                    filter = arg2;
+                } else {
+                    filter = arg1;
+                }
+            }
+            rpc = nc_rpc_getconfig(ds, filter, NC_WD_UNKNOWN, NC_PARAMTYPE_CONST);
+        } else if (!strcmp(cmd, "lock") || !strcmp(cmd, "unlock")) {
+            NC_DATASTORE ds = string2datastore(arg1);
+            if (!ds || ds == NC_DATASTORE_STARTUP) {
+                fprintf(stderr, "invalid datastore\n");
+                rc = 2;
+                continue;
+            }
+            rpc = !strcmp(cmd, "lock") ? nc_rpc_lock(ds) : nc_rpc_unlock(ds);
+        } else if (!strcmp(cmd, "validate")) {
+            NC_DATASTORE ds = NC_DATASTORE_CANDIDATE;
+            if (arg1) {
+                ds = string2datastore(arg1);
+                if (!ds) {
+                    fprintf(stderr, "invalid datastore\n");
+                    rc = 2;
+                    continue;
+                }
+            }
+            rpc = nc_rpc_validate(ds, NULL, NC_PARAMTYPE_CONST);
+        } else if (!strcmp(cmd, "commit")) {
+            rpc = nc_rpc_commit(0, 0, NULL, NULL, NC_PARAMTYPE_CONST);
+        } else if (!strcmp(cmd, "discard-changes")) {
+            rpc = nc_rpc_discard();
+        } else if (!strcmp(cmd, "edit-config")) {
+            NC_DATASTORE ds = string2datastore(arg1);
+            if (!ds || !arg2) {
+                fprintf(stderr, "edit-config requires: <datastore> <xml-file>\n");
+                rc = 2;
+                continue;
+            }
+            edit_content = read_file(arg2);
+            if (!edit_content) {
+                rc = 1;
+                continue;
+            }
+            rpc = nc_rpc_edit(ds, NC_RPC_EDIT_DFLTOP_UNKNOWN, NC_RPC_EDIT_TESTOPT_UNKNOWN,
+                    NC_RPC_EDIT_ERROPT_UNKNOWN, edit_content, NC_PARAMTYPE_CONST);
+        } else {
+            fprintf(stderr, "unknown command: %s\n", cmd);
+            rc = 2;
+            continue;
+        }
+
+        if (!rpc) {
+            fprintf(stderr, "failed to create RPC\n");
+            free(edit_content);
+            rc = 1;
+            continue;
+        }
+        rc = send_and_print(session, rpc, timeout_ms);
+        nc_rpc_free(rpc);
+        free(edit_content);
+        fflush(stdout);
+    }
+    return rc;
+}
+
 static const char *
 pick_first_existing_dir(const char *pathlist)
 {
@@ -656,6 +805,28 @@ main(int argc, char **argv)
             goto cleanup;
         }
         rpc = nc_rpc_unlock(ds);
+    } else if (!strcmp(rpc_name, "hold-lock")) {
+        NC_DATASTORE ds;
+        int duration_sec = 60;
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "hold-lock requires: <running|candidate> [seconds]\n");
+            rc = 2;
+            goto cleanup;
+        }
+        ds = string2datastore(argv[optind + 1]);
+        if (!ds || ds == NC_DATASTORE_STARTUP) {
+            fprintf(stderr, "Invalid datastore for hold-lock: %s\n", argv[optind + 1]);
+            rc = 2;
+            goto cleanup;
+        }
+        if (optind + 2 < argc) {
+            duration_sec = (int)strtol(argv[optind + 2], NULL, 10);
+        }
+        rc = run_hold_lock(session, ds, duration_sec, timeout_ms);
+        goto cleanup;
+    } else if (!strcmp(rpc_name, "interactive")) {
+        rc = run_interactive(session, timeout_ms);
+        goto cleanup;
     } else if (!strcmp(rpc_name, "subscribe")) {
         int duration_sec = 30;
         if (optind + 1 < argc) {

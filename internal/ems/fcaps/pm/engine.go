@@ -9,6 +9,7 @@ import (
 	"lte-element-manager/internal/ems/bus"
 	"lte-element-manager/internal/ems/domain/canonical"
 	"lte-element-manager/internal/ems/domain/nrm"
+	pmdefs "lte-element-manager/internal/ems/domain/pm"
 	"lte-element-manager/internal/ems/telemetry"
 	emserrors "lte-element-manager/internal/errors"
 )
@@ -23,6 +24,7 @@ type Engine struct {
 
 	windowStart time.Time
 	acc         map[nrm.DN]map[string]*metricAcc
+	maxDN       int
 }
 
 func NewEngine(b *bus.Bus, reg *nrm.Registry, store *Store, cfg Config, log zerolog.Logger) *Engine {
@@ -40,6 +42,7 @@ func NewEngine(b *bus.Bus, reg *nrm.Registry, store *Store, cfg Config, log zero
 		cfg:         cfg,
 		windowStart: time.Now(),
 		acc:         make(map[nrm.DN]map[string]*metricAcc, 64),
+		maxDN:       1024,
 	}
 }
 
@@ -94,10 +97,17 @@ func (e *Engine) ingest(samples []canonical.Sample) {
 		}
 		mm, ok := e.acc[dn]
 		if !ok {
+			if len(e.acc) >= e.maxDN {
+				e.Log.Warn().Int("max_dn", e.maxDN).Str("dn", string(dn)).Msg("pm accumulator limit reached, dropping sample")
+				continue
+			}
 			mm = make(map[string]*metricAcc, len(s.Metrics))
 			e.acc[dn] = mm
 		}
 		for name, m := range s.Metrics {
+			if !pmdefs.IsAllowedCanonicalKey(name) {
+				continue
+			}
 			a, ok := mm[name]
 			if !ok {
 				a = newMetricAcc(m)

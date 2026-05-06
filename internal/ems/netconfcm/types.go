@@ -42,6 +42,10 @@ type CommitRequest struct {
 	SessionMeta
 }
 
+type KeepAliveRequest struct {
+	Sessions []SessionMeta `json:"sessions"`
+}
+
 type DataState struct {
 	Running   *configuration.EditableConfig `json:"running,omitempty"`
 	Candidate *configuration.EditableConfig `json:"candidate,omitempty"`

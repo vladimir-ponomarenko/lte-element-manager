@@ -23,6 +23,7 @@ static const char *g_control_unix = NULL;
 
 #define MAX_TRACKED_SESSIONS 64
 #define NOTIFICATION_POLL_MS 250
+#define SESSION_KEEPALIVE_SEC 10
 
 struct session_state {
   struct nc_session *session;
@@ -246,16 +247,18 @@ static int http_post_raw(const char *url, const char *payload,
   return 0;
 }
 
-static char *extract_message(const char *json) {
+static char *extract_json_string(const char *json, const char *key) {
   const char *p;
   const char *q;
   char *out;
   size_t len;
 
-  if (!json) {
+  if (!json || !key || !key[0]) {
     return NULL;
   }
-  p = strstr(json, "\"message\"");
+  char needle[128];
+  snprintf(needle, sizeof(needle), "\"%s\"", key);
+  p = strstr(json, needle);
   if (!p) {
     return NULL;
   }
@@ -292,11 +295,101 @@ static char *extract_message(const char *json) {
   return out;
 }
 
+static char *extract_message(const char *json) {
+  return extract_json_string(json, "message");
+}
+
+static uint32_t extract_error_session_id(const char *json) {
+  const char *p;
+  unsigned long long sid = 0;
+  if (!json) {
+    return 0;
+  }
+  p = strstr(json, "\"session_id\"");
+  if (!p) {
+    return 0;
+  }
+  p = strchr(p, ':');
+  if (!p) {
+    return 0;
+  }
+  ++p;
+  while ((*p == ' ') || (*p == '\t')) {
+    ++p;
+  }
+  if (sscanf(p, "%llu", &sid) != 1) {
+    return 0;
+  }
+  if (sid > UINT32_MAX) {
+    return 0;
+  }
+  return (uint32_t)sid;
+}
+
+static NC_ERR map_error_tag(const char *tag, NC_ERR fallback) {
+  if (!tag || !tag[0]) {
+    return fallback;
+  }
+  if (!strcmp(tag, "in-use")) {
+    return NC_ERR_IN_USE;
+  }
+  if (!strcmp(tag, "invalid-value")) {
+    return NC_ERR_INVALID_VALUE;
+  }
+  if (!strcmp(tag, "lock-denied")) {
+    return NC_ERR_LOCK_DENIED;
+  }
+  if (!strcmp(tag, "operation-failed")) {
+    return NC_ERR_OP_FAILED;
+  }
+  if (!strcmp(tag, "operation-not-supported")) {
+    return NC_ERR_OP_NOT_SUPPORTED;
+  }
+  if (!strcmp(tag, "resource-denied")) {
+    return NC_ERR_RES_DENIED;
+  }
+  return fallback;
+}
+
+static NC_ERR_TYPE map_error_type(const char *type) {
+  if (!type || !type[0]) {
+    return NC_ERR_TYPE_APP;
+  }
+  if (!strcmp(type, "transport")) {
+    return NC_ERR_TYPE_TRAN;
+  }
+  if (!strcmp(type, "rpc")) {
+    return NC_ERR_TYPE_RPC;
+  }
+  if (!strcmp(type, "protocol")) {
+    return NC_ERR_TYPE_PROT;
+  }
+  return NC_ERR_TYPE_APP;
+}
+
 static struct nc_server_reply *rpc_error_msg(const struct ly_ctx *ctx,
                                              NC_ERR tag, const char *msg) {
   struct lyd_node *err = nc_err(ctx, tag, NC_ERR_TYPE_APP);
   if (err && msg && msg[0]) {
     nc_err_set_msg(err, msg, "en");
+  }
+  return nc_server_reply_err(err);
+}
+
+static struct nc_server_reply *rpc_error_full(const struct ly_ctx *ctx,
+                                              NC_ERR tag, NC_ERR_TYPE type,
+                                              const char *msg,
+                                              const char *app_tag,
+                                              uint32_t session_id) {
+  struct lyd_node *err = nc_err(ctx, tag, type);
+  if (err && msg && msg[0]) {
+    nc_err_set_msg(err, msg, "en");
+  }
+  if (err && app_tag && app_tag[0]) {
+    nc_err_set_app_tag(err, app_tag);
+  }
+  if (err && session_id) {
+    nc_err_set_sid(err, session_id);
   }
   return nc_server_reply_err(err);
 }
@@ -389,6 +482,52 @@ static int any_subscribed_session(void) {
     }
   }
   return 0;
+}
+
+static void send_session_keepalive(void) {
+  char payload[4096];
+  size_t off = 0;
+  long code = 0;
+  char *resp = NULL;
+  int first = 1;
+
+  if (!g_control || !g_control[0]) {
+    return;
+  }
+
+  off += (size_t)snprintf(payload + off, sizeof(payload) - off,
+                          "{\"sessions\":[");
+  for (size_t i = 0; i < MAX_TRACKED_SESSIONS; ++i) {
+    struct nc_session *s = g_sessions[i].session;
+    if (!s) {
+      continue;
+    }
+    if (off + 128 >= sizeof(payload)) {
+      break;
+    }
+    off += (size_t)snprintf(payload + off, sizeof(payload) - off,
+                            "%s{\"session_id\":%u}", first ? "" : ",",
+                            nc_session_get_id(s));
+    first = 0;
+  }
+  if (off + 3 >= sizeof(payload)) {
+    return;
+  }
+  off += (size_t)snprintf(payload + off, sizeof(payload) - off, "]}");
+  (void)control_post_system("/v1/control/netconf/sessions/keepalive", payload,
+                            5L, &code, &resp);
+  free(resp);
+}
+
+static void reset_control_sessions(void) {
+  long code = 0;
+  char *resp = NULL;
+  if (!g_control || !g_control[0]) {
+    return;
+  }
+  (void)control_post_system("/v1/control/netconf/sessions/reset", "{}", 10L,
+                            &code, &resp);
+  free(resp);
 }
 
 static int load_yang_dir_modules(struct ly_ctx *ctx, const char *dirs) {
@@ -791,11 +930,21 @@ static struct nc_server_reply *control_status_reply(const struct ly_ctx *ctx,
     return nc_server_reply_ok();
   }
   char *msg = extract_message(resp);
+  char *raw_tag = extract_json_string(resp, "error_tag");
+  char *raw_type = extract_json_string(resp, "error_type");
+  char *app_tag = extract_json_string(resp, "error_app_tag");
+  uint32_t sid = extract_error_session_id(resp);
+  NC_ERR mapped_tag = map_error_tag(raw_tag, err_tag);
+  NC_ERR_TYPE mapped_type = map_error_type(raw_type);
   if (!msg) {
     msg = strdup(fallback ? fallback : "internal control request failed");
   }
-  r = rpc_error_msg(ctx, err_tag, msg ? msg : fallback);
+  r = rpc_error_full(ctx, mapped_tag, mapped_type, msg ? msg : fallback,
+                     app_tag, sid);
   free(msg);
+  free(raw_tag);
+  free(raw_type);
+  free(app_tag);
   free(resp);
   return r;
 }
@@ -1340,6 +1489,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  reset_control_sessions();
+  time_t last_keepalive = 0;
   while (!g_stop) {
     struct nc_session *session = NULL;
     int acc = nc_accept(100, ctx, &session);
@@ -1360,6 +1511,11 @@ int main(int argc, char **argv) {
       }
     }
     poll_and_dispatch_notifications(ctx);
+    time_t now = time(NULL);
+    if (now - last_keepalive >= SESSION_KEEPALIVE_SEC) {
+      send_session_keepalive();
+      last_keepalive = now;
+    }
   }
 
   nc_ps_free(ps);

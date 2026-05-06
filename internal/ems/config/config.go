@@ -22,6 +22,8 @@ type Config struct {
 	NRM NRMConfig `yaml:"nrm"`
 	// PM controls performance management engine settings.
 	PM PMConfig `yaml:"pm"`
+	// FM controls fault management settings.
+	FM FMConfig `yaml:"fm"`
 	// Control configures control-plane APIs (configuration actions).
 	Control ControlConfig `yaml:"control"`
 }
@@ -94,6 +96,45 @@ type PMConfig struct {
 	Enabled           bool   `yaml:"enabled"`
 	GranularityPeriod string `yaml:"granularity_period"`
 	ReportPeriod      string `yaml:"report_period"`
+}
+
+type FMConfig struct {
+	TCA TCAConfig `yaml:"tca"`
+}
+
+type TCAConfig struct {
+	Enabled              bool             `yaml:"enabled"`
+	TestInjectionEnabled bool             `yaml:"test_injection_enabled"`
+	Rules                TCARuleSetConfig `yaml:"rules"`
+}
+
+type TCARuleSetConfig struct {
+	S1InterfaceDown        TCARuleConfig `yaml:"s1_interface_down"`
+	NASSignalingLoss       TCARuleConfig `yaml:"nas_signaling_loss"`
+	NASSecurityMismatch    TCARuleConfig `yaml:"nas_security_mismatch"`
+	NASParsingFailure      TCARuleConfig `yaml:"nas_parsing_failure"`
+	RRCProtocolError       TCARuleConfig `yaml:"rrc_protocol_error"`
+	RRCConnectionRejection TCARuleConfig `yaml:"rrc_connection_rejection"`
+	CoreServiceReject      TCARuleConfig `yaml:"core_service_reject"`
+	PagingCapacityExceeded TCARuleConfig `yaml:"paging_capacity_exceeded"`
+	RLCMaxRetransmissions  TCARuleConfig `yaml:"rlc_max_retransmissions"`
+	LowThroughput          TCARuleConfig `yaml:"low_throughput"`
+	LowULSINR              TCARuleConfig `yaml:"low_ul_sinr"`
+	BadSignalCondition     TCARuleConfig `yaml:"bad_signal_condition"`
+	HighBLER               TCARuleConfig `yaml:"high_bler"`
+	RadioLinkFailureStorm  TCARuleConfig `yaml:"radio_link_failure_storm"`
+	RFInterferenceDetected TCARuleConfig `yaml:"rf_interference_detected"`
+	UEInactivityCleanup    TCARuleConfig `yaml:"ue_inactivity_cleanup"`
+	BearerCongestion       TCARuleConfig `yaml:"bearer_congestion"`
+	PowerHeadroomCritical  TCARuleConfig `yaml:"power_headroom_critical"`
+}
+
+type TCARuleConfig struct {
+	Enabled        bool    `yaml:"enabled"`
+	RaiseThreshold float64 `yaml:"raise_threshold"`
+	ClearThreshold float64 `yaml:"clear_threshold"`
+	RaiseDuration  string  `yaml:"raise_duration"`
+	ClearDuration  string  `yaml:"clear_duration"`
 }
 
 type ControlConfig struct {

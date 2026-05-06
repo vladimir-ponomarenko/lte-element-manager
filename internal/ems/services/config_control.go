@@ -16,8 +16,12 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"lte-element-manager/internal/ems/bus"
 	"lte-element-manager/internal/ems/configuration"
+	"lte-element-manager/internal/ems/domain/canonical"
+	"lte-element-manager/internal/ems/domain/nrm"
 	"lte-element-manager/internal/ems/fcaps/alarms"
+	pmfcaps "lte-element-manager/internal/ems/fcaps/pm"
 	"lte-element-manager/internal/ems/netconfcm"
 	"lte-element-manager/internal/ems/worker"
 	emserrors "lte-element-manager/internal/errors"
@@ -30,6 +34,8 @@ type ConfigControl struct {
 	Store         *configuration.Store
 	NETCONF       *netconfcm.Manager
 	Notifications *alarms.NotificationQueue
+	Bus           *bus.Bus
+	TCATestInject bool
 	Log           zerolog.Logger
 	mu            sync.Mutex
 }
@@ -49,11 +55,24 @@ type editConfigRequest struct {
 	Changes map[string]any `json:"changes"`
 }
 
+type tcaTestReportRequest struct {
+	ManagedObject string             `json:"managed_object"`
+	Metrics       map[string]float64 `json:"metrics"`
+}
+
 type configResponse struct {
-	Status    string                        `json:"status"`
-	Running   *configuration.EditableConfig `json:"running,omitempty"`
-	Candidate *configuration.EditableConfig `json:"candidate,omitempty"`
-	Message   string                        `json:"message,omitempty"`
+	Status      string                        `json:"status"`
+	Running     *configuration.EditableConfig `json:"running,omitempty"`
+	Candidate   *configuration.EditableConfig `json:"candidate,omitempty"`
+	Message     string                        `json:"message,omitempty"`
+	ErrorTag    string                        `json:"error_tag,omitempty"`
+	ErrorType   string                        `json:"error_type,omitempty"`
+	ErrorAppTag string                        `json:"error_app_tag,omitempty"`
+	ErrorInfo   *netconfErrorInfo             `json:"error_info,omitempty"`
+}
+
+type netconfErrorInfo struct {
+	SessionID uint64 `json:"session_id,omitempty"`
 }
 
 func NewConfigControl(addr string, targets map[string]string, sup worker.LifecycleSupervisor, store *configuration.Store, netconfMgr *netconfcm.Manager, notifications *alarms.NotificationQueue, log zerolog.Logger) *ConfigControl {
@@ -135,7 +154,10 @@ func (s *ConfigControl) handler() http.Handler {
 	mux.HandleFunc("/v1/control/netconf/lock", s.handleNetconfLock)
 	mux.HandleFunc("/v1/control/netconf/unlock", s.handleNetconfUnlock)
 	mux.HandleFunc("/v1/control/netconf/session-close", s.handleNetconfSessionClose)
+	mux.HandleFunc("/v1/control/netconf/sessions/reset", s.handleNetconfSessionReset)
+	mux.HandleFunc("/v1/control/netconf/sessions/keepalive", s.handleNetconfKeepAlive)
 	mux.HandleFunc("/v1/control/netconf/notifications", s.handleNetconfNotifications)
+	mux.HandleFunc("/v1/control/fm/tca/test-report", s.handleTCATestReport)
 	return mux
 }
 
@@ -378,6 +400,48 @@ func writeConfigJSON(w http.ResponseWriter, status int, payload configResponse) 
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func writeNetconfError(w http.ResponseWriter, err error) {
+	if err == nil {
+		writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok"})
+		return
+	}
+	var rpcErr *netconfcm.RPCError
+	if errors.As(err, &rpcErr) {
+		resp := configResponse{
+			Status:      "error",
+			Message:     rpcErr.Message,
+			ErrorTag:    rpcErr.Tag,
+			ErrorType:   rpcErr.Type,
+			ErrorAppTag: rpcErr.AppTag,
+		}
+		if resp.Message == "" {
+			resp.Message = rpcErr.Error()
+		}
+		if rpcErr.OwnerSessionID != 0 {
+			resp.ErrorInfo = &netconfErrorInfo{SessionID: rpcErr.OwnerSessionID}
+		}
+		writeConfigJSON(w, httpStatusForRPCError(rpcErr), resp)
+		return
+	}
+	writeConfigJSON(w, http.StatusBadRequest, configResponse{
+		Status:    "error",
+		Message:   err.Error(),
+		ErrorTag:  netconfcm.ErrorTagOperationFailed,
+		ErrorType: "application",
+	})
+}
+
+func httpStatusForRPCError(err *netconfcm.RPCError) int {
+	switch err.Tag {
+	case netconfcm.ErrorTagInUse, netconfcm.ErrorTagLockDenied:
+		return http.StatusConflict
+	case netconfcm.ErrorTagInvalidValue:
+		return http.StatusBadRequest
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 func (s *ConfigControl) handleNetconfEditConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeConfigJSON(w, http.StatusMethodNotAllowed, configResponse{Status: "error", Message: "method not allowed"})
@@ -394,7 +458,7 @@ func (s *ConfigControl) handleNetconfEditConfig(w http.ResponseWriter, r *http.R
 	}
 	cfg, err := s.NETCONF.EditConfig(req)
 	if err != nil {
-		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: err.Error()})
+		writeNetconfError(w, err)
 		return
 	}
 	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok", Candidate: cfg})
@@ -415,7 +479,7 @@ func (s *ConfigControl) handleNetconfValidate(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if err := s.NETCONF.Validate(req); err != nil {
-		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: err.Error()})
+		writeNetconfError(w, err)
 		return
 	}
 	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok"})
@@ -437,7 +501,7 @@ func (s *ConfigControl) handleNetconfCommit(w http.ResponseWriter, r *http.Reque
 	}
 	cfg, err := s.NETCONF.Commit(req)
 	if err != nil {
-		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: err.Error()})
+		writeNetconfError(w, err)
 		return
 	}
 	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok", Running: cfg})
@@ -459,7 +523,7 @@ func (s *ConfigControl) handleNetconfDiscardChanges(w http.ResponseWriter, r *ht
 	}
 	cfg, err := s.NETCONF.DiscardChanges(req)
 	if err != nil {
-		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: err.Error()})
+		writeNetconfError(w, err)
 		return
 	}
 	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok", Candidate: cfg})
@@ -494,7 +558,7 @@ func (s *ConfigControl) handleNetconfLockLike(w http.ResponseWriter, r *http.Req
 		err = s.NETCONF.Unlock(req)
 	}
 	if err != nil {
-		writeConfigJSON(w, http.StatusConflict, configResponse{Status: "error", Message: err.Error()})
+		writeNetconfError(w, err)
 		return
 	}
 	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok"})
@@ -515,6 +579,37 @@ func (s *ConfigControl) handleNetconfSessionClose(w http.ResponseWriter, r *http
 		return
 	}
 	s.NETCONF.SessionClose(req.SessionID)
+	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok"})
+}
+
+func (s *ConfigControl) handleNetconfSessionReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeConfigJSON(w, http.StatusMethodNotAllowed, configResponse{Status: "error", Message: "method not allowed"})
+		return
+	}
+	if s.NETCONF == nil {
+		writeConfigJSON(w, http.StatusServiceUnavailable, configResponse{Status: "error", Message: "netconf mediation is not configured"})
+		return
+	}
+	s.NETCONF.ResetSessions()
+	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok"})
+}
+
+func (s *ConfigControl) handleNetconfKeepAlive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeConfigJSON(w, http.StatusMethodNotAllowed, configResponse{Status: "error", Message: "method not allowed"})
+		return
+	}
+	if s.NETCONF == nil {
+		writeConfigJSON(w, http.StatusServiceUnavailable, configResponse{Status: "error", Message: "netconf mediation is not configured"})
+		return
+	}
+	var req netconfcm.KeepAliveRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: "invalid JSON payload"})
+		return
+	}
+	s.NETCONF.KeepAlive(req.Sessions)
 	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok"})
 }
 
@@ -543,6 +638,54 @@ func (s *ConfigControl) handleNetconfNotifications(w http.ResponseWriter, r *htt
 	for _, item := range items {
 		_, _ = fmt.Fprintf(w, "%s\t%s\n", item.EventTime.UTC().Format(time.RFC3339), item.Payload)
 	}
+}
+
+func (s *ConfigControl) handleTCATestReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeConfigJSON(w, http.StatusMethodNotAllowed, configResponse{Status: "error", Message: "method not allowed"})
+		return
+	}
+	if !s.TCATestInject || s.Bus == nil {
+		writeConfigJSON(w, http.StatusNotFound, configResponse{Status: "error", Message: "TCA test injection is disabled"})
+		return
+	}
+	var req tcaTestReportRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: "invalid JSON payload"})
+		return
+	}
+	moi := nrm.DN(strings.TrimSpace(req.ManagedObject))
+	if moi == "" {
+		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: "managed_object is required"})
+		return
+	}
+	if len(req.Metrics) == 0 {
+		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: "metrics are required"})
+		return
+	}
+	values := make(map[string]pmfcaps.Value, len(req.Metrics))
+	for name, value := range req.Metrics {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		values[name] = pmfcaps.Value{
+			Metric: canonical.Metric{Name: name, Value: value},
+			Value:  value,
+		}
+	}
+	if len(values) == 0 {
+		writeConfigJSON(w, http.StatusBadRequest, configResponse{Status: "error", Message: "metrics are empty after normalization"})
+		return
+	}
+	now := time.Now().UTC()
+	s.Bus.Publish(pmfcaps.Event{Report: pmfcaps.Report{
+		Begin:       now,
+		End:         now,
+		Granularity: 0,
+		ByDN:        map[nrm.DN]map[string]pmfcaps.Value{moi: values},
+	}})
+	writeConfigJSON(w, http.StatusOK, configResponse{Status: "ok", Message: "TCA test report accepted"})
 }
 
 func decodeNetconfEditRequest(r *http.Request, out *netconfcm.EditRequest) error {

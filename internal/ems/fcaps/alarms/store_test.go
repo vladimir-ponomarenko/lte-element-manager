@@ -1,6 +1,7 @@
 package alarms
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -63,6 +64,28 @@ func TestStore_UpsertAndClear(t *testing.T) {
 	active := s.Active()
 	if len(active) != 1 {
 		t.Fatalf("expected 1 active record, got %d", len(active))
+	}
+}
+
+func TestPersistentStoreReloadsActiveAlarms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aal_state.json")
+	s, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatalf("NewPersistentStore: %v", err)
+	}
+	at := time.Unix(1, 0).UTC()
+	_, _ = s.Upsert(at, "uds", Normalize("uds", "SubNetwork=srsRAN/ManagedElement=enb1", domain.Alarm{Message: "socket gone"}))
+
+	reloaded, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatalf("reload persistent store: %v", err)
+	}
+	active := reloaded.Active()
+	if len(active) != 1 {
+		t.Fatalf("expected one active alarm after reload, got %d", len(active))
+	}
+	if active[0].Key.Code != AlarmUDSDisconnected || active[0].Count != 1 {
+		t.Fatalf("unexpected active alarm: %+v", active[0])
 	}
 }
 
