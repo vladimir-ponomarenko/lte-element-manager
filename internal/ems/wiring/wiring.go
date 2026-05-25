@@ -72,6 +72,16 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 		snapshotPath = c.cfg.Metrics.SnapshotPath
 	}
 
+	if domain.ElementType(c.cfg.Element.Type) == domain.ElementEPC {
+		runner := service.NewRunner(c.log)
+		h := health.New()
+		reader := services.NewMetricsReader(agent, rawIn, logAdapter, h)
+		reader.LogUDS = true
+		runner.Add(reader)
+		runner.Add(services.NewRawMetricsSink(rawIn, snapshotPath, logMetrics))
+		return runner, nil
+	}
+
 	aalPath := ""
 	if snapshotPath != "" {
 		aalPath = filepath.Join(filepath.Dir(snapshotPath), "aal_state.json")

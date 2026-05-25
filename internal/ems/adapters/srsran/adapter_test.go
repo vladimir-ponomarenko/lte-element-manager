@@ -15,8 +15,8 @@ func TestNewMetricsSource(t *testing.T) {
 		t.Fatalf("unexpected type")
 	}
 
-	if _, err := NewMetricsSource(domain.ElementEPC, ""); err == nil {
-		t.Fatalf("expected error")
+	if _, err := NewMetricsSource(domain.ElementEPC, ""); err != nil {
+		t.Fatalf("unexpected error for EPC mode: %v", err)
 	}
 	if _, err := NewMetricsSource(domain.ElementType("nope"), ""); err == nil {
 		t.Fatalf("expected error")

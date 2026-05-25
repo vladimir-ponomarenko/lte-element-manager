@@ -19,7 +19,7 @@ func NewMetricsSource(elementType domain.ElementType, socketPath string) (Metric
 	case domain.ElementENB:
 		return &ENBMetricsReader{SocketPath: socketPath}, nil
 	case domain.ElementEPC:
-		return nil, ErrUnsupported
+		return &ENBMetricsReader{SocketPath: socketPath}, nil
 	default:
 		return nil, ErrUnsupported
 	}
