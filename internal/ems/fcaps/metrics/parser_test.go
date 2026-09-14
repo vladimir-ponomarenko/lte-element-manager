@@ -70,3 +70,31 @@ func TestParserFor_ENB(t *testing.T) {
 	}
 	_, _ = p([]byte(`{"type":"wrong","timestamp":1}`))
 }
+
+func TestParseGnbMetrics_OK(t *testing.T) {
+	payload := []byte(`{"type":"gnb_metrics","timestamp":1,"gnb_id":"gnb-1","ngap_container":{"ngap_status":"connected"},"cell_list":[]}`)
+	m, err := ParseGnbMetrics(payload)
+	if err != nil {
+		t.Fatalf("ParseGnbMetrics: %v", err)
+	}
+	if m.Identity() != "gnb-1" {
+		t.Fatalf("identity = %q", m.Identity())
+	}
+	if ParserFor(domain.ElementGNB) == nil {
+		t.Fatal("gNB parser is not registered")
+	}
+	if ParserFor(domain.ElementOAIGNB) == nil {
+		t.Fatal("OAI gNB parser is not registered")
+	}
+}
+
+func TestParseGnbMetrics_AcceptsNumericNRIdentifiersAndWrappedCell(t *testing.T) {
+	payload := []byte(`{"type":"gnb_metrics","timestamp":1,"gnb_id":1099511627777,"cell_list":[{"cell_container":{"nci":68719476735,"pci":10}}]}`)
+	m, err := ParseGnbMetrics(payload)
+	if err != nil {
+		t.Fatalf("ParseGnbMetrics: %v", err)
+	}
+	if m.Identity() != "1099511627777" || m.CellList[0].Identity() != "68719476735" {
+		t.Fatalf("identifiers lost precision: %#v", m)
+	}
+}

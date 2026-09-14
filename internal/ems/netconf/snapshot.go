@@ -19,10 +19,13 @@ type SnapshotConfig struct {
 	SubNetwork     string
 	ManagedElement string
 	ENBFunctionID  string
+	GNBFunctionID  string
+	ElementType    string
 }
 
 type combinedSnapshot struct {
-	Legacy     json.RawMessage `json:"ems-enb-metrics:enb_metrics,omitempty"`
+	ENBLegacy  json.RawMessage `json:"ems-enb-metrics:enb_metrics,omitempty"`
+	GNBLegacy  json.RawMessage `json:"ems-gnb-metrics:gnb_metrics,omitempty"`
 	SubNetwork []subNetwork    `json:"_3gpp-common-managed-element:SubNetwork,omitempty"`
 }
 
@@ -34,6 +37,7 @@ type subNetwork struct {
 type managedElement struct {
 	ID          string        `json:"id"`
 	ENBFunction []enbFunction `json:"ENBFunction,omitempty"`
+	GNBFunction []gnbFunction `json:"GNBCUCPFunction,omitempty"`
 }
 
 type enbFunction struct {
@@ -41,6 +45,20 @@ type enbFunction struct {
 	EUtranCell []eUtranCell  `json:"EUtranCell,omitempty"`
 	SRSRAN     *srsranVendor `json:"srsran-vendor-ext:srsran,omitempty"`
 	Faults     *faultState   `json:"ems-fault-management:fault_management,omitempty"`
+}
+
+type gnbFunction struct {
+	ID       string      `json:"id"`
+	NRCellDU []nrCellDU  `json:"NRCellDU,omitempty"`
+	Faults   *faultState `json:"ems-fault-management:fault_management,omitempty"`
+	SRSRAN   *gnbVendor  `json:"srsran-nr-vendor-ext:srsran,omitempty"`
+}
+type nrCellDU struct {
+	ID           string        `json:"id"`
+	Measurements *measurements `json:"measurements,omitempty"`
+}
+type gnbVendor struct {
+	GnbMetrics json.RawMessage `json:"gnb_metrics,omitempty"`
 }
 
 type eUtranCell struct {
@@ -76,7 +94,11 @@ type activeAlarm struct {
 }
 
 func BuildCombinedSnapshot(cfg SnapshotConfig, reg *nrm.Registry, pmStore *pm.Store, normalizedLegacy string, alarmStores ...*alarms.Store) ([]byte, error) {
-	if cfg.SubNetwork == "" || cfg.ManagedElement == "" || cfg.ENBFunctionID == "" {
+	missingFunctionID := cfg.ENBFunctionID == ""
+	if isGNBProfile(cfg.ElementType) {
+		missingFunctionID = cfg.GNBFunctionID == ""
+	}
+	if cfg.SubNetwork == "" || cfg.ManagedElement == "" || missingFunctionID {
 		return nil, emserrors.New(emserrors.ErrCodeConfig, "snapshot config is incomplete",
 			emserrors.WithOp("netconf.snapshot"),
 			emserrors.WithSeverity(emserrors.SeverityCritical),
@@ -110,21 +132,31 @@ func BuildCombinedSnapshot(cfg SnapshotConfig, reg *nrm.Registry, pmStore *pm.St
 		}
 	}
 
+	me := managedElement{ID: cfg.ManagedElement}
+	if isGNBProfile(cfg.ElementType) {
+		g := gnbFunction{ID: cfg.GNBFunctionID, SRSRAN: &gnbVendor{GnbMetrics: legacy}}
+		if len(alarmStores) > 0 {
+			g.Faults = buildFaultState(alarmStores[0])
+		}
+		for _, c := range reg.EUtranCells() {
+			g.NRCellDU = append(g.NRCellDU, nrCellDU{ID: c.Name, Measurements: cellMeasurements(c, pmStore)})
+		}
+		me.GNBFunction = []gnbFunction{g}
+	} else {
+		me.ENBFunction = []enbFunction{fn}
+	}
 	snap := combinedSnapshot{
-		Legacy: legacy,
 		SubNetwork: []subNetwork{
 			{
-				ID: cfg.SubNetwork,
-				ManagedElement: []managedElement{
-					{
-						ID: cfg.ManagedElement,
-						ENBFunction: []enbFunction{
-							fn,
-						},
-					},
-				},
+				ID:             cfg.SubNetwork,
+				ManagedElement: []managedElement{me},
 			},
 		},
+	}
+	if isGNBProfile(cfg.ElementType) {
+		snap.GNBLegacy = legacy
+	} else {
+		snap.ENBLegacy = legacy
 	}
 
 	out, err := json.Marshal(snap)
@@ -135,6 +167,16 @@ func BuildCombinedSnapshot(cfg SnapshotConfig, reg *nrm.Registry, pmStore *pm.St
 		)
 	}
 	return out, nil
+}
+
+func isGNBProfile(elementType string) bool { return elementType == "gnb" || elementType == "oai-gnb" }
+
+func cellMeasurements(c nrm.Object, store *pm.Store) *measurements {
+	report, ok := latestReport(store)
+	if !ok {
+		return nil
+	}
+	return buildMeasurements(report.ByDN[c.DN])
 }
 
 func buildFaultState(store *alarms.Store) *faultState {

@@ -37,10 +37,11 @@ func buildMetricsReply(store *metrics.Store) (string, error) {
 		return "", err
 	}
 
-	root := xml.StartElement{
-		Name: xml.Name{Local: "enb_metrics"},
-		Attr: []xml.Attr{{Name: xml.Name{Local: "xmlns"}, Value: moduleNamespace}},
+	rootName, namespace := "enb_metrics", moduleNamespace
+	if typ, _ := obj["type"].(string); typ == "gnb_metrics" {
+		rootName, namespace = "gnb_metrics", "urn:ems:gnb:metrics"
 	}
+	root := xml.StartElement{Name: xml.Name{Local: rootName}, Attr: []xml.Attr{{Name: xml.Name{Local: "xmlns"}, Value: namespace}}}
 	if err := enc.EncodeToken(root); err != nil {
 		return "", err
 	}

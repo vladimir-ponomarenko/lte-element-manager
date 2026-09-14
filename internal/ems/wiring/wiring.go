@@ -81,6 +81,14 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 		runner.Add(services.NewRawMetricsSink(rawIn, snapshotPath, logMetrics))
 		return runner, nil
 	}
+	// The LTE configuration store edits srsENB .conf files. Do not let an NR
+	// deployment accidentally apply that renderer to an srsRAN Project YAML.
+	if (domain.ElementType(c.cfg.Element.Type) == domain.ElementGNB || domain.ElementType(c.cfg.Element.Type) == domain.ElementOAIGNB) && c.cfg.Control.Enabled {
+		return nil, emserrors.New(emserrors.ErrCodeConfig, "NR configuration write-back is not enabled: supply an srsRAN Project YAML configuration adapter before enabling control",
+			emserrors.WithOp("wiring"),
+			emserrors.WithSeverity(emserrors.SeverityCritical),
+		)
+	}
 
 	aalPath := ""
 	if snapshotPath != "" {
@@ -116,12 +124,18 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 		SubNetwork:     c.cfg.NRM.SubNetwork,
 		ManagedElement: c.cfg.NRM.ManagedElement,
 		ENBFunctionID:  c.cfg.NRM.ENBFunctionID,
+		GNBFunctionID:  c.cfg.NRM.GNBFunctionID,
+		ElementType:    c.cfg.Element.Type,
 	})
 	if err != nil {
 		return nil, err
 	}
 	alarmLogPath := filepath.Join(filepath.Dir(c.cfg.Element.SocketPath), c.cfg.NRM.ManagedElement+"_alarms.log")
-	alarmMOI := "SubNetwork=" + c.cfg.NRM.SubNetwork + "/ManagedElement=" + c.cfg.NRM.ManagedElement + "/ENBFunction=" + c.cfg.NRM.ENBFunctionID
+	functionName, functionID := "ENBFunction", c.cfg.NRM.ENBFunctionID
+	if c.cfg.Element.Type == string(domain.ElementGNB) || c.cfg.Element.Type == string(domain.ElementOAIGNB) {
+		functionName, functionID = "GNBCUCPFunction", c.cfg.NRM.GNBFunctionID
+	}
+	alarmMOI := "SubNetwork=" + c.cfg.NRM.SubNetwork + "/ManagedElement=" + c.cfg.NRM.ManagedElement + "/" + functionName + "=" + functionID
 	runner.Add(services.NewAlarmLogReader(alarmLogPath, alarmMOI, b, alarmMgr, logFaults))
 
 	reader := services.NewMetricsReader(agent, rawIn, logAdapter, h)
@@ -139,6 +153,8 @@ func (c *Container) Build(ctx context.Context) (*service.Runner, error) {
 			SubNetwork:     c.cfg.NRM.SubNetwork,
 			ManagedElement: c.cfg.NRM.ManagedElement,
 			ENBFunctionID:  c.cfg.NRM.ENBFunctionID,
+			GNBFunctionID:  c.cfg.NRM.GNBFunctionID,
+			ElementType:    c.cfg.Element.Type,
 		},
 		reg,
 		pmStore,

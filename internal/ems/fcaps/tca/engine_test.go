@@ -101,6 +101,7 @@ func TestAllRequiredMetricAlarmsRaise(t *testing.T) {
 		alarm  string
 	}{
 		{name: "s1 down", dn: enbDN(), values: map[string]float64{domainpm.CanonicalS1APReady: 0}, alarm: alarms.AlarmS1InterfaceDown},
+		{name: "ngap down", dn: enbDN(), values: map[string]float64{domainpm.CanonicalNGAPReady: 0}, alarm: alarms.AlarmS1InterfaceDown},
 		{name: "nas signaling", dn: enbDN(), values: map[string]float64{domainpm.CanonicalNASDLDrop: 1}, alarm: alarms.AlarmNASSignalingLoss},
 		{name: "nas security", dn: enbDN(), values: map[string]float64{domainpm.CanonicalNASULSecUnknown: 1}, alarm: alarms.AlarmNASSecurityMismatch},
 		{name: "nas parse", dn: enbDN(), values: map[string]float64{domainpm.CanonicalNASULParseFail: 1}, alarm: alarms.AlarmNASParsingFailure},

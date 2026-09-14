@@ -18,6 +18,12 @@ func NewMetricsSource(elementType domain.ElementType, socketPath string) (Metric
 	switch elementType {
 	case domain.ElementENB:
 		return &ENBMetricsReader{SocketPath: socketPath}, nil
+	case domain.ElementGNB:
+		// srsRAN 5G exports datagrams using the same transport contract; the
+		// payload is decoded by the NR parser further down the FCAPS pipeline.
+		return &ENBMetricsReader{SocketPath: socketPath}, nil
+	case domain.ElementOAIGNB:
+		return &OAI5GMetricsReader{SocketPath: socketPath}, nil
 	case domain.ElementEPC:
 		return &ENBMetricsReader{SocketPath: socketPath}, nil
 	default:

@@ -4,7 +4,13 @@ type ElementType string
 
 const (
 	ElementENB ElementType = "enb"
-	ElementEPC ElementType = "epc"
+	// ElementGNB is a 5G NR gNodeB.  Keep it separate from ENB: the core
+	// interface (NGAP) and the NRM hierarchy are different.
+	ElementGNB ElementType = "gnb"
+	// ElementOAIGNB is an OpenAirInterface 5G gNB. Its metrics normally come
+	// from an E2/KPM bridge, not from the srsRAN metrics exporter.
+	ElementOAIGNB ElementType = "oai-gnb"
+	ElementEPC    ElementType = "epc"
 )
 
 type MetricSample struct {

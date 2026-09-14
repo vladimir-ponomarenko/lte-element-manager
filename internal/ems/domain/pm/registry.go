@@ -19,6 +19,7 @@ const (
 	CanonicalUERRCInactivity = "ue.rrc_release_cause_inactivity"
 	CanonicalRRCConnectedUES = "rrc.rrc_connected_ues"
 	CanonicalS1APReady       = "s1ap.ready"
+	CanonicalNGAPReady       = "ngap.ready"
 	CanonicalS1APStatusCode  = "s1ap.status_code"
 	CanonicalNASDLDrop       = "s1ap.nas_dl_drop"
 	CanonicalNASULFail       = "s1ap.nas_ul_fail"
@@ -102,6 +103,7 @@ var MeasurementDefinitions = []MetricMeta{
 		Description:  "Currently connected RRC UEs.",
 	},
 	{CanonicalKey: CanonicalS1APReady, Type: canonical.Gauge, Unit: "boolean", Description: "S1AP ready state encoded as 1/0."},
+	{CanonicalKey: CanonicalNGAPReady, Type: canonical.Gauge, Unit: "boolean", Description: "NGAP ready state encoded as 1/0."},
 	{CanonicalKey: CanonicalS1APStatusCode, Type: canonical.Gauge, Unit: "count", Description: "S1AP status code."},
 	{CanonicalKey: CanonicalNASDLDrop, Type: canonical.Counter, Unit: "count", Description: "Dropped downlink NAS messages."},
 	{CanonicalKey: CanonicalNASULFail, Type: canonical.Counter, Unit: "count", Description: "Failed uplink NAS messages."},

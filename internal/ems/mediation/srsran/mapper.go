@@ -26,6 +26,15 @@ func (m *Mapper) Map(rawJSON string) ([]canonical.Sample, error) {
 		)
 	}
 
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &envelope); err != nil {
+		return nil, fmt.Errorf("invalid metrics json: %w", err)
+	}
+	if envelope.Type == "gnb_metrics" {
+		return m.mapGNB(rawJSON)
+	}
 	parsed, err := parseEnbMetrics([]byte(rawJSON))
 	if err != nil {
 		return nil, err
@@ -41,6 +50,68 @@ func (m *Mapper) Map(rawJSON string) ([]canonical.Sample, error) {
 	out = append(out, mapNode(tsMillis, sourceID, parsed))
 	out = append(out, mapCells(tsMillis, sourceID, parsed.CellList)...)
 	return out, nil
+}
+
+func (m *Mapper) mapGNB(rawJSON string) ([]canonical.Sample, error) {
+	var g domain.GnbMetrics
+	if err := json.Unmarshal([]byte(rawJSON), &g); err != nil {
+		return nil, err
+	}
+	if g.Type != "gnb_metrics" || g.Timestamp == 0 || g.Identity() == "" {
+		return nil, emserrors.New(emserrors.ErrCodeDataCorrupt, "invalid gNB metrics envelope", emserrors.WithOp("mediation.srsran"), emserrors.WithSeverity(emserrors.SeverityMajor))
+	}
+	source := m.SourceID
+	if source == "" {
+		source = g.Identity()
+	}
+	ts := int64(g.Timestamp * 1000)
+	node := canonical.Sample{Timestamp: ts, SourceID: source, Scope: "node", Metrics: map[string]canonical.Metric{}, Attrs: map[string]string{"type": g.Type, "gnb_id": g.Identity()}}
+	mapNRCounters(node.Metrics, "ngap", g.NGAP)
+	mapNRCounters(node.Metrics, "rrc", g.RRC)
+	if ready, ok := nrReady(g.NGAP); ok {
+		putGauge(node.Metrics, domainpm.CanonicalNGAPReady, "boolean", ready)
+	}
+	out := []canonical.Sample{node}
+	for _, c := range g.CellList {
+		cellID := c.Identity()
+		cell := canonical.Sample{Timestamp: ts, SourceID: source, Scope: "cell:nr=" + cellID, Metrics: map[string]canonical.Metric{}, Attrs: map[string]string{"nci": string(c.NCI), "nr_cell_id": string(c.NRCellID), "pci": strconv.FormatUint(uint64(c.PCI), 10)}}
+		out = append(out, cell)
+		for _, u := range c.UEList {
+			ue := canonical.Sample{Timestamp: ts, SourceID: source, Scope: cell.Scope + "/ue:rnti=" + strconv.FormatUint(uint64(u.RNTI), 10), Metrics: map[string]canonical.Metric{}, Attrs: map[string]string{"ue_rnti": strconv.FormatUint(uint64(u.RNTI), 10)}}
+			putGauge(ue.Metrics, domainpm.CanonicalUEDLCQI, "index", u.DLCQI)
+			putGauge(ue.Metrics, domainpm.CanonicalUEDLBitrate, "bps", u.DLBitrate)
+			putGauge(ue.Metrics, domainpm.CanonicalUEDLBLER, "ratio", u.DLBLER)
+			putGauge(ue.Metrics, domainpm.CanonicalUEULSNR, "dB", u.ULSINR)
+			putGauge(ue.Metrics, domainpm.CanonicalUEULBitrate, "bps", u.ULBitrate)
+			putGauge(ue.Metrics, domainpm.CanonicalUEULBLER, "ratio", u.ULBLER)
+			putGauge(ue.Metrics, domainpm.CanonicalUEULPHR, "dB", u.ULPHR)
+			out = append(out, ue)
+		}
+	}
+	return out, nil
+}
+
+func mapNRCounters(dst map[string]canonical.Metric, prefix string, values map[string]any) {
+	for k, raw := range values {
+		if v, ok := raw.(float64); ok {
+			if prefix == "rrc" && k == "rrc_connected_ues" {
+				putGauge(dst, domainpm.CanonicalRRCConnectedUES, "count", v)
+				continue
+			}
+			putCounter(dst, prefix+"."+k, "count", v)
+		}
+	}
+}
+func nrReady(values map[string]any) (float64, bool) {
+	for _, k := range []string{"ngap_status", "status"} {
+		if s, ok := values[k].(string); ok {
+			if strings.EqualFold(s, "ready") || strings.EqualFold(s, "connected") {
+				return 1, true
+			}
+			return 0, true
+		}
+	}
+	return 0, false
 }
 
 func parseEnbMetrics(raw []byte) (*domain.EnbMetrics, error) {

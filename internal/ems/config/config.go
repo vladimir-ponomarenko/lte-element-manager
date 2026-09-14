@@ -90,6 +90,7 @@ type NRMConfig struct {
 	SubNetwork     string `yaml:"subnetwork"`
 	ManagedElement string `yaml:"managed_element"`
 	ENBFunctionID  string `yaml:"enb_function_id"`
+	GNBFunctionID  string `yaml:"gnb_function_id"`
 }
 
 type PMConfig struct {
@@ -251,6 +252,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Element.SocketPath == "" {
 		cfg.Element.SocketPath = def.Element.SocketPath
 	}
+	if isNRGNB(cfg.Element.Type) && cfg.Element.SocketPath == def.Element.SocketPath {
+		cfg.Element.SocketPath = "/var/run/gnb-metrics/gnb_metrics.uds"
+	}
 	if cfg.Bus.Buffer == 0 {
 		cfg.Bus.Buffer = def.Bus.Buffer
 	}
@@ -287,8 +291,18 @@ func applyDefaults(cfg *Config) {
 	if cfg.NRM.ManagedElement == "" {
 		cfg.NRM.ManagedElement = def.NRM.ManagedElement
 	}
+	if isNRGNB(cfg.Element.Type) && cfg.NRM.ManagedElement == def.NRM.ManagedElement {
+		cfg.NRM.ManagedElement = "gnb1"
+	}
 	if cfg.NRM.ENBFunctionID == "" {
-		cfg.NRM.ENBFunctionID = def.NRM.ENBFunctionID
+		if !isNRGNB(cfg.Element.Type) {
+			cfg.NRM.ENBFunctionID = def.NRM.ENBFunctionID
+		}
+	} else if isNRGNB(cfg.Element.Type) && cfg.NRM.ENBFunctionID == def.NRM.ENBFunctionID {
+		cfg.NRM.ENBFunctionID = ""
+	}
+	if cfg.NRM.GNBFunctionID == "" && isNRGNB(cfg.Element.Type) {
+		cfg.NRM.GNBFunctionID = "1"
 	}
 	if cfg.PM.GranularityPeriod == "" {
 		cfg.PM.GranularityPeriod = def.PM.GranularityPeriod
@@ -306,6 +320,8 @@ func applyDefaults(cfg *Config) {
 		cfg.Control.Restart.Timeout = def.Control.Restart.Timeout
 	}
 }
+
+func isNRGNB(elementType string) bool { return elementType == "gnb" || elementType == "oai-gnb" }
 
 func applyEnvOverrides(cfg *Config) {
 	if v := envString("EMS_ELEMENT_TYPE", "ELEMENT_TYPE"); v != "" {
@@ -367,6 +383,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := envString("EMS_NRM_ENB_FUNCTION_ID", "NRM_ENB_FUNCTION_ID"); v != "" {
 		cfg.NRM.ENBFunctionID = v
+	}
+	if v := envString("EMS_NRM_GNB_FUNCTION_ID", "NRM_GNB_FUNCTION_ID"); v != "" {
+		cfg.NRM.GNBFunctionID = v
 	}
 	if v, ok := envBool("EMS_PM_ENABLED", "PM_ENABLED"); ok {
 		cfg.PM.Enabled = v

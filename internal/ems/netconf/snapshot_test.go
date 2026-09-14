@@ -45,3 +45,29 @@ func TestBuildCombinedSnapshotIncludesActiveAlarms(t *testing.T) {
 		t.Fatalf("unexpected occurrence_count: %#v", alarm)
 	}
 }
+
+func TestBuildCombinedSnapshotGNBUsesNRModules(t *testing.T) {
+	reg, err := nrm.New(nrm.Config{SubNetwork: "srsRAN", ManagedElement: "gnb1", GNBFunctionID: "1", ElementType: "gnb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := BuildCombinedSnapshot(SnapshotConfig{SubNetwork: "srsRAN", ManagedElement: "gnb1", GNBFunctionID: "1", ElementType: "gnb"}, reg, nil, `{"type":"gnb_metrics"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := root["ems-enb-metrics:enb_metrics"]; found {
+		t.Fatal("gNB snapshot must not expose LTE telemetry module")
+	}
+	if _, found := root["ems-gnb-metrics:gnb_metrics"]; !found {
+		t.Fatal("missing gNB telemetry module")
+	}
+	sub := root["_3gpp-common-managed-element:SubNetwork"].([]any)[0].(map[string]any)
+	me := sub["ManagedElement"].([]any)[0].(map[string]any)
+	if _, found := me["GNBCUCPFunction"]; !found {
+		t.Fatal("missing GNBCUCPFunction")
+	}
+}

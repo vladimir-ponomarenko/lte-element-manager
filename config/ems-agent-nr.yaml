@@ -1,0 +1,47 @@
+# Production baseline for an srsRAN 5G gNB telemetry endpoint.
+element:
+  type: gnb
+  socket_path: /var/run/gnb-metrics/gnb_metrics.uds
+
+bus:
+  buffer: 200
+
+metrics:
+  snapshot_path: /var/lib/ems/gnb-snapshot.json
+
+netconf:
+  enabled: true
+  addr: 0.0.0.0:8300
+  transport: ssh
+  snapshot_path: /var/lib/ems/gnb-netconf.json
+  yang_dir: yang
+  ssh:
+    hostkey: /run/secrets/netconf_hostkey
+    authorized_key: /run/secrets/netconf_authorized_keys
+    username: admin
+
+nrm:
+  subnetwork: srsRAN
+  managed_element: gnb1
+  gnb_function_id: "1"
+
+pm:
+  enabled: true
+  granularity_period: 10s
+  report_period: 10s
+
+fm:
+  tca:
+    enabled: true
+    rules:
+      s1_interface_down:
+        enabled: true
+        raise_threshold: 1
+        clear_threshold: 1
+        raise_duration: 10s
+        clear_duration: 10s
+
+# NR configuration write-back is intentionally disabled until the exact
+# srsRAN Project YAML schema/version is supplied.
+control:
+  enabled: false

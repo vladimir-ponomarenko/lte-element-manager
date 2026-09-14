@@ -1,0 +1,19 @@
+module _3gpp-nr-managed-element {
+  yang-version 1.1;
+  namespace "urn:3gpp:sa5:_3gpp-nr-managed-element";
+  prefix nr;
+  import _3gpp-common-managed-element { prefix cme; }
+  revision 2026-09-14 { description "NR NRM extension used by the EMS gNB profile."; }
+  augment "/cme:SubNetwork/cme:ManagedElement" {
+    list GNBCUCPFunction { key "id"; leaf id { type string; }
+      leaf gnb_id { type string; config true; }
+      leaf amf_addr { type string; config true; }
+      list NRCellDU { key "id"; leaf id { type string; }
+        leaf nci { type string; config true; }
+        leaf nrarfcn_dl { type uint32; config true; }
+        leaf pci { type uint16 { range "0..1007"; } config true; }
+        uses cme:measurements-group;
+      }
+    }
+  }
+}

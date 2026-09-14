@@ -63,6 +63,20 @@ log:
 	}
 }
 
+func TestLoad_GNBProfileGetsNRDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(path, []byte("element:\n  type: gnb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Element.SocketPath != "/var/run/gnb-metrics/gnb_metrics.uds" || cfg.NRM.ManagedElement != "gnb1" || cfg.NRM.GNBFunctionID != "1" {
+		t.Fatalf("unexpected gNB defaults: %+v", cfg)
+	}
+}
+
 func TestEnvBool_InvalidDoesNotOverride(t *testing.T) {
 	t.Setenv("EMS_LOG_COLOR", "maybe")
 	cfg, err := Load(filepath.Join(t.TempDir(), "nope.yaml"))

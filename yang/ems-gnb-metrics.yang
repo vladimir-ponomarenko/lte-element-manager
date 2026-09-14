@@ -1,0 +1,28 @@
+module ems-gnb-metrics {
+  yang-version 1.1;
+  namespace "urn:ems:gnb:metrics";
+  prefix ems;
+  organization "SibSUTIS & YADRO";
+  revision 2026-09-14 { description "Initial NR gNB FCAPS telemetry model."; }
+  grouping gnb-metrics-body {
+    leaf type { type string; }
+    leaf timestamp { type decimal64 { fraction-digits 6; } }
+    leaf gnb_id { type string; }
+    leaf gnb_serial { type string; }
+    container ngap_container { config false; leaf ngap_status { type string; } }
+    container rrc_container { config false; }
+    list cell_list { key "nr_cell_id"; config false;
+      leaf nr_cell_id { type string; }
+      leaf nci { type string; }
+      leaf pci { type uint16; }
+      list ue_list { key "ue_rnti"; leaf ue_rnti { type uint32; }
+        leaf dl_bitrate { type decimal64 { fraction-digits 6; } }
+        leaf ul_bitrate { type decimal64 { fraction-digits 6; } }
+        leaf ul_sinr { type decimal64 { fraction-digits 6; } }
+        leaf dl_bler { type decimal64 { fraction-digits 6; } }
+        leaf ul_bler { type decimal64 { fraction-digits 6; } }
+      }
+    }
+  }
+  container gnb_metrics { config false; uses gnb-metrics-body; }
+}

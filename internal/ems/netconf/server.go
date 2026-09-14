@@ -136,6 +136,7 @@ func helloMessage() string {
 		`<capabilities>` +
 		`<capability>urn:ietf:params:netconf:base:1.0</capability>` +
 		`<capability>urn:ems:enb:metrics?module=ems-enb-metrics&amp;revision=2026-04-01</capability>` +
+		`<capability>urn:ems:gnb:metrics?module=ems-gnb-metrics&amp;revision=2026-09-14</capability>` +
 		`</capabilities>` +
 		`</hello>`
 }

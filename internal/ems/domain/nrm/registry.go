@@ -15,7 +15,9 @@ const (
 	MOTypeSubNetwork     MOType = "SubNetwork"
 	MOTypeManagedElement        = "ManagedElement"
 	MOTypeENBFunction           = "ENBFunction"
+	MOTypeGNBFunction           = "GNBCUCPFunction"
 	MOTypeEUtranCell            = "EUtranCell"
+	MOTypeNRCellDU              = "NRCellDU"
 )
 
 type Object struct {
@@ -27,9 +29,11 @@ type Object struct {
 type Registry struct {
 	mu sync.RWMutex
 
-	subNetwork string
-	element    string
-	enbFnID    string
+	subNetwork  string
+	element     string
+	enbFnID     string
+	gnbFnID     string
+	elementType string
 
 	objectsByDN map[DN]Object
 	cellsByKey  map[string]Object
@@ -39,10 +43,16 @@ type Config struct {
 	SubNetwork     string
 	ManagedElement string
 	ENBFunctionID  string
+	GNBFunctionID  string
+	ElementType    string
 }
 
 func New(cfg Config) (*Registry, error) {
-	if cfg.SubNetwork == "" || cfg.ManagedElement == "" || cfg.ENBFunctionID == "" {
+	missingFunctionID := cfg.ENBFunctionID == ""
+	if cfg.ElementType == "gnb" || cfg.ElementType == "oai-gnb" {
+		missingFunctionID = cfg.GNBFunctionID == ""
+	}
+	if cfg.SubNetwork == "" || cfg.ManagedElement == "" || missingFunctionID {
 		return nil, emserrors.New(emserrors.ErrCodeConfig, "nrm config is incomplete",
 			emserrors.WithOp("nrm"),
 			emserrors.WithSeverity(emserrors.SeverityCritical),
@@ -53,6 +63,8 @@ func New(cfg Config) (*Registry, error) {
 		subNetwork:  cfg.SubNetwork,
 		element:     cfg.ManagedElement,
 		enbFnID:     cfg.ENBFunctionID,
+		gnbFnID:     cfg.GNBFunctionID,
+		elementType: cfg.ElementType,
 		objectsByDN: make(map[DN]Object, 64),
 		cellsByKey:  make(map[string]Object, 32),
 	}
@@ -61,12 +73,16 @@ func New(cfg Config) (*Registry, error) {
 }
 
 func (r *Registry) initStatic() {
+	fnType, fnID := MOType(MOTypeENBFunction), r.enbFnID
+	if r.gnbFnID != "" || r.elementType == "gnb" || r.elementType == "oai-gnb" {
+		fnType, fnID = MOTypeGNBFunction, r.gnbFnID
+	}
 	base := Build(
 		RDN{Key: string(MOTypeSubNetwork), Value: r.subNetwork},
 		RDN{Key: string(MOTypeManagedElement), Value: r.element},
-		RDN{Key: string(MOTypeENBFunction), Value: r.enbFnID},
+		RDN{Key: string(fnType), Value: fnID},
 	)
-	r.objectsByDN[base] = Object{Type: MOTypeENBFunction, Name: r.enbFnID, DN: base}
+	r.objectsByDN[base] = Object{Type: fnType, Name: fnID, DN: base}
 }
 
 func (r *Registry) ENBDN() DN {
@@ -77,10 +93,18 @@ func (r *Registry) ENBDN() DN {
 	)
 }
 
+// NodeDN returns the technology-specific function DN.
+func (r *Registry) NodeDN() DN {
+	if r.gnbFnID != "" || r.elementType == "gnb" || r.elementType == "oai-gnb" {
+		return Build(RDN{Key: string(MOTypeSubNetwork), Value: r.subNetwork}, RDN{Key: string(MOTypeManagedElement), Value: r.element}, RDN{Key: string(MOTypeGNBFunction), Value: r.gnbFnID})
+	}
+	return r.ENBDN()
+}
+
 func (r *Registry) Resolve(s canonical.Sample) (DN, error) {
 	switch {
 	case s.Scope == "node":
-		return r.ENBDN(), nil
+		return r.NodeDN(), nil
 	case s.Scope == "":
 		return "", emserrors.New(emserrors.ErrCodeDataCorrupt, "canonical sample scope is empty",
 			emserrors.WithOp("nrm"),
@@ -90,7 +114,7 @@ func (r *Registry) Resolve(s canonical.Sample) (DN, error) {
 
 	cellKey := cellKeyFromSample(s)
 	if cellKey == "" {
-		return r.ENBDN(), nil
+		return r.NodeDN(), nil
 	}
 	return r.ensureCell(cellKey), nil
 }
@@ -127,8 +151,12 @@ func (r *Registry) ensureCell(key string) DN {
 	}
 
 	cellName := sanitizeCellID(key)
-	cellDN := Append(r.ENBDN(), RDN{Key: string(MOTypeEUtranCell), Value: cellName})
-	obj := Object{Type: MOTypeEUtranCell, Name: cellName, DN: cellDN}
+	cellType := MOType(MOTypeEUtranCell)
+	if r.gnbFnID != "" || r.elementType == "gnb" || r.elementType == "oai-gnb" {
+		cellType = MOTypeNRCellDU
+	}
+	cellDN := Append(r.NodeDN(), RDN{Key: string(cellType), Value: cellName})
+	obj := Object{Type: cellType, Name: cellName, DN: cellDN}
 	r.cellsByKey[key] = obj
 	r.objectsByDN[cellDN] = obj
 	return cellDN

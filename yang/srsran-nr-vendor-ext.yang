@@ -1,0 +1,15 @@
+module srsran-nr-vendor-ext {
+  yang-version 1.1;
+  namespace "urn:ems:srsran:nr";
+  prefix srsnr;
+  import _3gpp-common-managed-element { prefix cme; }
+  import _3gpp-nr-managed-element { prefix nr; }
+  import ems-gnb-metrics { prefix ems; }
+  revision 2026-09-14 { description "srsRAN NR telemetry augment."; }
+  augment "/cme:SubNetwork/cme:ManagedElement/nr:GNBCUCPFunction" {
+    container srsran {
+      config false;
+      container gnb_metrics { uses ems:gnb-metrics-body; }
+    }
+  }
+}

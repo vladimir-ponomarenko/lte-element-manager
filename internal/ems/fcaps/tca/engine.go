@@ -89,10 +89,21 @@ func (e *Engine) evaluateS1Interface(report pmfcaps.Report, now time.Time) []ala
 		return nil
 	}
 	return e.evaluatePerDNWithRule(report, now, thresholdRule{name: RuleS1InterfaceDown, code: alarms.AlarmS1InterfaceDown, config: cfg},
-		metricValue(domainpm.CanonicalS1APReady),
+		firstMetricValue(domainpm.CanonicalS1APReady, domainpm.CanonicalNGAPReady),
 		func(v float64, cfg RuleConfig) bool { return v < cfg.RaiseThreshold },
 		func(v float64, cfg RuleConfig) bool { return v >= cfg.ClearThreshold },
 	)
+}
+
+func firstMetricValue(keys ...string) func(map[string]pmfcaps.Value) (float64, bool) {
+	return func(values map[string]pmfcaps.Value) (float64, bool) {
+		for _, key := range keys {
+			if value, ok := values[key]; ok {
+				return value.Value, true
+			}
+		}
+		return 0, false
+	}
 }
 
 func (e *Engine) evaluateNodeCounters(report pmfcaps.Report, now time.Time) []alarms.Event {

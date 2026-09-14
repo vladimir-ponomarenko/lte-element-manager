@@ -44,6 +44,8 @@ nrm:
   subnetwork: srsRAN
   managed_element: enb1
   enb_function_id: "1"
+  # NR profile example: set element.type: gnb and use gnb_function_id instead.
+  # gnb_function_id: "1"
 
 pm:
   enabled: false

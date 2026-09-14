@@ -65,6 +65,18 @@ func TestContainer_Build_ControlEnabledWithoutTargets(t *testing.T) {
 	}
 }
 
+func TestContainer_Build_GNBRejectsLTEConfigurationWriter(t *testing.T) {
+	cfg := config.Default()
+	cfg.Element.Type = "gnb"
+	cfg.NRM.ENBFunctionID = ""
+	cfg.NRM.GNBFunctionID = "1"
+	cfg.Control.Enabled = true
+	c := New(cfg, zerolog.Nop())
+	if _, err := c.Build(context.Background()); err == nil {
+		t.Fatal("expected NR control guard")
+	}
+}
+
 func TestContainer_Build_ControlInvalidTimeout(t *testing.T) {
 	cfg := config.Default()
 	cfg.Control.Enabled = true
